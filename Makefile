@@ -1,4 +1,4 @@
-# Copyright (c) 2016 Kewin Rausch <kewin.rausch@create-net.org>
+# Copyright (c) 2016-2018 Kewin Rausch
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,6 @@
 # limitations under the License.
 #
 
-#
-# You can personalize these variables if you want a sandboxed installation.
-#
 export INSTDIR=/usr/lib
 export INCLDIR=/usr/include/emage
 

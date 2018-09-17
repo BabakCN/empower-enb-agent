@@ -1,4 +1,4 @@
-/* Copyright (c) 2016 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,336 +13,436 @@
  * limitations under the License.
  */
 
-/*
- * Empower Agent internal triggers logic.
- */
-
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <pthread.h>
 
 #include <emage/emproto.h>
 
 #include "agent.h"
 
+/* Very minimal memory reporting mechanism */
+#ifdef EBUG_MEMORY
+
+/* Total amount of memory used in trigger creation */
+unsigned int trig_mem    = 0;
+/* Memory has overflown? (unlikely, but still register it) */
+int          trig_mem_OF = 0;
+
+#endif /* EBUG_MEMORY */
+
 /******************************************************************************
  * Locking and atomic context                                                 *
  ******************************************************************************/
 
-/* Holds the lock to access critical part of a network context */
+/* Procedure:
+ *      trig_lock_ctx
+ * 
+ * Abstract:
+ *      Lock a trigger context.
+ * 
+ * Assumptions:
+ *      Lock already initialized.
+ * 
+ * Arguments:
+ *      t - The trigger context to lock
+ * 
+ * Returns:
+ *      ---
+ */
 #define trig_lock_ctx(t)        pthread_spin_lock(&t->lock)
 
-/* Relinquishes the lock to access critical part of a network context */
+/* Procedure:
+ *      trig_unlock_ctx
+ * 
+ * Abstract:
+ *      Unlock a trigger context.
+ * 
+ * Assumptions:
+ *      Lock already initialized.
+ * 
+ * Arguments:
+ *      t - The trigger context to unlock
+ * 
+ * Returns:
+ *      ---
+ */
 #define trig_unlock_ctx(t)      pthread_spin_unlock(&t->lock)
 
 /******************************************************************************
  * Procedures                                                                 *
  ******************************************************************************/
 
-/* Add a new trigger with given characteristics in the given context */
+/* Procedure:
+ *      trig_alloc
+ * 
+ * Abstract:
+ *      Allocate a new trigger with the given arguments. This just reserve space
+ *         and initialize the trigger, but does not add it to a context.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      mod      - Module which requested the trigger 
+ *         type     - Type of trigger
+ *         instance - Instance ID (several module can request multiple triggers)
+ *         msg      - Original message
+ *         size     - Original message size
+ * 
+ * Returns:
+ *      Valid pointer to a trigger, otherwise a null pointer on error.
+ */
 INTERNAL
-struct trigger *
-em_tr_add(
-	struct tr_context * tc,
-	int                 id,
-	int                 mod,
-	int                 type,
-	int                 instance,
-	char *              req,
-	unsigned char       size)
+emtri *
+trig_alloc(mod_id_t mod, int type, int instance, char * msg, unsigned int size)
 {
-	struct agent *   a = container_of(tc, struct agent, trig);
-	struct trigger * t = em_tr_find_ext(tc, mod, type, instance);
+        emtri * ret = malloc(sizeof(emtri));
 
-	if(t) {
-		EMDBG(a, "Trigger id %d, type %d already exists\n", id, type);
-		return t;
-	}
+        if(!ret) {
+                return 0;
+        }
 
-	t = malloc(sizeof(struct trigger));
+        memset(ret, 0, sizeof(emtri));
 
-	if(!t) {
-		EMLOG(a, "Not enough memory for new trigger!\n");
-		return 0;
-	}
+        INIT_LIST_HEAD(&ret->next);
+        ret->mod      = mod;
+        ret->type     = type;
+        ret->instance = instance;
 
-	memset(t, 0, sizeof(struct trigger));
+        if(msg) {
+                ret->msg = malloc(size);
 
-	if(req) {
-		t->req = malloc(sizeof(char) * size);
+                if(!ret->msg) {
+                        free(ret);
+                        return 0;
+                }
 
-		if(!t->req) {
-			EMLOG(a, "Not enough memory for new buffer!\n");
-			free(t);
-			return 0;
-		}
+                memcpy(ret->msg, msg, size);
+                ret->msg_size = size;
+        }
 
-		memcpy(t->req, req, size);
-		t->size = size;
-	}
+#ifdef EBUG_MEMORY
+        /* Memory overflow, which means more than 4GB just for this! */
+        if(trig_mem + sizeof(emtri) + size < trig_mem) {
+                trig_mem_OF++;
+        }
 
-	INIT_LIST_HEAD(&t->next);
-	t->id       = id;
-	t->mod      = mod;
-	t->type     = type;
-	t->instance = instance;
+        trig_mem += sizeof(emtri) + size;
 
-/****** Start of the critical section *****************************************/
-	trig_lock_ctx(tc);
+        printf("Triggers used memory is %09d bytes; overflow? %d\n", 
+                trig_mem, 
+                trig_mem_OF);
+#endif  /* EBUG_MEMORY */
 
-	list_add(&t->next, &tc->ts);
-
-	trig_unlock_ctx(tc);
-/****** End of the critical section *******************************************/
-
-	//EMDBG("New trigger enabled, id=%d, type=%d", id, type);
-
-	return t;
+        return ret;
 }
 
-/* Delete a trigger with given characteristics from the context */
+/* Procedure:
+ *      trig_add
+ * 
+ * Abstract:
+ *      Adds a trigger to a trigger context.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx  - Context to operate on
+ *      trig - Trigger to add to the context
+ * 
+ * Returns:
+ *      The ID assigned to the trigger, or a negative error value.
+ */
 INTERNAL
-int
-em_tr_del(struct tr_context * tc, int id)
-{
-#ifdef EBUG
-	struct agent *   a = container_of(tc, struct agent, trig);
-#endif
-	struct trigger * t = 0;
-	struct trigger * u = 0;
-
-/****** Start of the critical section *****************************************/
-	trig_lock_ctx(tc);
-
-	list_for_each_entry_safe(t, u, &tc->ts, next) {
-		if(t->id == id) {
-			list_del(&t->next);
-			trig_unlock_ctx(tc);
-
-			EMDBG(a, "Removing trigger %d, type=%d, mod=%d\n",
-				t->id, t->type, t->mod);
-
-			em_tr_free(t);
-
-			return 0;
-		}
-	}
-
-	trig_unlock_ctx(tc);
-/****** End of the critical section *******************************************/
-
-	EMDBG(a, "Trigger doesn't exists, id=%d, type=%d, mod=%d \n",
-		t->id, t->type, t->mod);
-
-	return -1;
-}
-
-/* Delete a trigger with given characteristics from the context */
-INTERNAL
-int
-em_tr_del_ext(struct tr_context * tc, int mod, int type, int instance)
+trig_id_t
+trig_add(trctx * ctx, emtri * trig)
 {
 #ifdef EBUG
-	struct agent *   a = container_of(tc, struct agent, trig);
+        emage * a = container_of(ctx, emage, trig);
 #endif
-	struct trigger * t = 0;
-	struct trigger * u = 0;
-
 /****** Start of the critical section *****************************************/
-	trig_lock_ctx(tc);
-
-	list_for_each_entry_safe(t, u, &tc->ts, next) {
-		if(t->type == type &&
-			t->mod == mod &&
-			t->instance == instance) {
-
-			list_del(&t->next);
-			trig_unlock_ctx(tc);
-
-			EMDBG(a, "Removing trigger %d, type=%d, mod=%d\n",
-				t->id, t->type, t->mod);
-
-			em_tr_free(t);
-
-			return 0;
-		}
-	}
-
-	trig_unlock_ctx(tc);
+        trig_lock_ctx(ctx);
+        trig->id = ctx->next++;
+        list_add(&trig->next, &ctx->ts);
+        trig_unlock_ctx(ctx);
 /****** End of the critical section *******************************************/
 
-	EMDBG(a, "Trigger doesn't exists, id=%d, type=%d, mod=%d \n",
-		t->id, t->type, t->mod);
+        EMDBG(a, "New trigger added, id=%d, type=%d\n", trig->id, trig->type);
 
-	return -1;
+        return trig->id;
 }
 
-/* Find a trigger using its id */
-INTERNAL
-struct trigger *
-em_tr_find(struct tr_context * tc, int id)
-{
-	struct trigger * t = 0;
-	int              f = 0;
-
-/****** Start of the critical section *****************************************/
-	trig_lock_ctx(tc);
-
-	list_for_each_entry(t, &tc->ts, next) {
-		if(t->id == id) {
-			f = 1;
-			break;
-		}
-	}
-
-	trig_unlock_ctx(tc);
-/****** End of the critical section *******************************************/
-
-	if(f) {
-		return t;
-	}
-
-	return 0;
-}
-
-/* Find a trigger using multiple keys; a very specific task */
-INTERNAL
-struct trigger *
-em_tr_find_ext(
-	struct tr_context * tc, int mod, int type, int instance)
-{
-	struct trigger * t = 0;
-	int              f = 0;
-
-/****** Start of the critical section *****************************************/
-	trig_lock_ctx(tc);
-
-	list_for_each_entry(t, &tc->ts, next) {
-		if(t->mod == mod &&
-			t->type == type &&
-			t->instance == instance) {
-
-			f = 1;
-			break;
-		}
-	}
-
-	trig_unlock_ctx(tc);
-/****** End of the critical section *******************************************/
-
-	if(f) {
-		return t;
-	}
-
-	return 0;
-}
-
-/* Remove any trigger from this context */
+/* Procedure:
+ *      trig_del_by_id
+ * 
+ * Abstract:
+ *      Removes a trigger from a trigger context. The search is performed using
+ *      the ID originally assigned to the trigger.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx  - Context to operate on
+ *      trig - Trigger to remove from the context
+ * 
+ * Returns:
+ *      0 on success, otherwise a negative error value
+ */
 INTERNAL
 int
-em_tr_flush(struct tr_context * tc)
+trig_del_by_id(trctx * ctx, trig_id_t id)
 {
 #ifdef EBUG
-	struct agent *   a = container_of(tc, struct agent, trig);
+        emage * a = container_of(ctx, emage, trig);
 #endif
-	struct trigger * t = 0;
-	struct trigger * u = 0;
-
-	EMDBG(a, "Starting to clean triggers\n");
+        emtri * t = 0;
+        emtri * u = 0;
 
 /****** Start of the critical section *****************************************/
-	trig_lock_ctx(tc);
+        trig_lock_ctx(ctx);
 
-	list_for_each_entry_safe(t, u, &tc->ts, next) {
-		EMDBG(a, "Flushing out trigger %d, mod=%d\n", t->id, t->mod);
+        list_for_each_entry_safe(t, u, &ctx->ts, next) {
+                if(t->id == id) {
+                        list_del(&t->next);
+                        trig_unlock_ctx(ctx); /* Unlocking ********************/
 
-		list_del(&t->next);
-		em_tr_free(t);
-	}
+                        EMDBG(a, "Removed trigger %d, type=%d\n", 
+				t->id, t->type);
 
-	trig_unlock_ctx(tc);
+                        trig_free(t);
+
+                        return 0;
+                }
+        }
+
+        trig_unlock_ctx(ctx);
 /****** End of the critical section *******************************************/
 
-	return 0;
+        EMDBG(a, "Trigger %d not found!\n", id);
+
+        return -1;
 }
 
-/* Free a single trigger releasing all its resources */
+/* Procedure:
+ *      trig_del_by_inst
+ * 
+ * Abstract:
+ *      Removes a trigger from a trigger context. The search is performed using
+ *      IDs alternative to the unique one used.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx      - Context to operate on
+ *      mod      - Controller module ID
+ *      type     - Type of trigger
+ *      instance - Instance of the trigger
+ * 
+ * Returns:
+ *      0 on success, otherwise a negative error value
+ */
+INTERNAL
+int
+trig_del_by_inst(trctx * ctx, int mod, int type, int instance)
+{
+#ifdef EBUG
+        emage * a = container_of(ctx, emage, trig);
+#endif
+        emtri * t = 0;
+        emtri * u = 0;
+
+/****** Start of the critical section *****************************************/
+        trig_lock_ctx(ctx);
+
+        list_for_each_entry_safe(t, u, &ctx->ts, next) {
+                if(t->type == type &&
+                        t->mod == mod &&
+                        t->instance == instance) 
+		{
+                        list_del(&t->next);
+                        trig_unlock_ctx(ctx); /* Unlocking ********************/
+
+                        EMDBG(a, "Removed trigger %d, type=%d\n",
+                                t->id, t->type);
+
+                        trig_free(t);
+
+                        return 0;
+                }
+        }
+
+        trig_unlock_ctx(ctx);
+/****** End of the critical section *******************************************/
+
+        EMDBG(a, "Trigger not found; type=%d, mod=%d, instance=%d\n",
+               type, mod, instance);
+
+        return -1;
+}
+
+/* Procedure:
+ *      trig_find_by_id
+ * 
+ * Abstract:
+ *      Find a certain trigger using it's ID. Operation is performed on a
+ *      particular given context.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx - Context to operate on
+ *      id  - Trigger ID to look for
+ * 
+ * Returns:
+ *      A trigger pointer on success, otherwise a null pointer.
+ */
+INTERNAL
+emtri *
+trig_find_by_id(trctx * ctx, int id)
+{
+        emtri * t = 0;
+
+/****** Start of the critical section *****************************************/
+        trig_lock_ctx(ctx);
+
+        list_for_each_entry(t, &ctx->ts, next) {
+                if(t->id == id) {
+                        trig_unlock_ctx(ctx); /* Unlocking ********************/
+                        return t;
+                }
+        }
+
+        trig_unlock_ctx(ctx);
+/****** End of the critical section *******************************************/
+
+        return 0;
+}
+
+/* Procedure:
+ *      trig_find_by_inst
+ * 
+ * Abstract:
+ *      Find a certain trigger using the alternative IDs. Operation is performed
+ *      on a particular given context.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx      - Context to operate on
+ *      mod      - Controller module ID
+ *      type     - Type of trigger
+ *      instance - Instance of the trigger
+ * 
+ * Returns:
+ *      A trigger pointer on success, otherwise a null pointer.
+ */
+INTERNAL
+emtri *
+trig_find_by_inst(trctx * ctx, int mod, int type, int instance)
+{
+        emtri * t = 0;
+
+/****** Start of the critical section *****************************************/
+        trig_lock_ctx(ctx);
+
+        list_for_each_entry(t, &ctx->ts, next) {
+                if(t->mod == mod &&
+                        t->type == type &&
+                        t->instance == instance) 
+		{
+                        trig_unlock_ctx(ctx); /* Unlocking ********************/
+			return t;
+                }
+        }
+
+        trig_unlock_ctx(ctx);
+/****** End of the critical section *******************************************/
+
+        return 0;
+}
+
+/* Procedure:
+ *      trig_flush
+ * 
+ * Abstract:
+ *      Flushes all the triggers present in a given context.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx - Context to operate on
+ * 
+ * Returns:
+ *      ---
+ */
 INTERNAL
 void
-em_tr_free(struct trigger * t)
-{
-	if(t) {
-		if(t->req) {
-			free(t->req);
-			t->req = 0;
-		}
-
-		free(t);
-	}
-}
-
-/* Acquire the next valid id for a trigger */
-INTERNAL
-int
-em_tr_next_id(struct tr_context * tc)
-{
-	struct trigger * t = 0;
-	int              n = 0;
-
-	/* Select a random trigger ID which is not already present */
-	do {
-		/* Rand generate values from 0 to RAND_MAX */
-		n = rand();
-
-		if(!n) {
-			n++;
-		}
-
-/****** Start of the critical section *****************************************/
-		trig_lock_ctx(tc);
-
-		list_for_each_entry(t, &tc->ts, next) {
-			if(n == t->id) {
-				n = 0;
-				break;
-			}
-		}
-
-		trig_unlock_ctx(tc);
-/****** End of the critical section *******************************************/
-	} while(!n);
-
-	return n;
-}
-
-/* Remove a trigger from the given context  */
-INTERNAL
-int
-em_tr_rem(struct tr_context * tc, int id, int type)
+trig_flush(trctx * ctx)
 {
 #ifdef EBUG
-	struct agent *   a = container_of(tc, struct agent, trig);
+        emage * a = container_of(ctx, emage, trig);
 #endif
-	struct trigger * t = 0;
-	struct trigger * u = 0;
+        emtri * t = 0;
+        emtri * u = 0;
+
+	EMDBG(a, "Flushing triggers\n");
 
 /****** Start of the critical section *****************************************/
-	trig_lock_ctx(tc);
+        trig_lock_ctx(ctx);
 
-	list_for_each_entry_safe(t, u, &tc->ts, next) {
-		if(t->id == id) {
-			EMDBG(a, "Removing trigger %d, mod=%d", t->id, t->mod);
+        list_for_each_entry_safe(t, u, &ctx->ts, next) {
+                EMDBG(a, "Flushing out trigger %d\n", t->id);
 
-			list_del(&t->next);
-			em_tr_free(t);
+                list_del(&t->next);
+                trig_free(t);
+        }
 
-			break;
-		}
-	}
-
-	trig_unlock_ctx(tc);
+        trig_unlock_ctx(ctx);
 /****** End of the critical section *******************************************/
 
-	return 0;
+        return;
+}
+
+/* Procedure:
+ *      trig_free
+ * 
+ * Abstract:
+ *      Free a previsously allocated trigger.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      trig - Trigger to be released
+ * 
+ * Returns:
+ *      ---
+ */
+INTERNAL
+void
+trig_free(emtri * trig)
+{
+        if(trig) {
+#ifdef EBUG_MEMORY
+                trig_mem -= sizeof(emtri) + trig->msg_size;
+
+                printf("Triggers used memory is %09d bytes; overflow? %d\n", 
+                        trig_mem, 
+                        trig_mem_OF);
+#endif  /* EBUG_MEMORY */
+
+                if(trig->msg) {
+                        free(trig->msg);
+                        trig->msg = 0;
+                        trig->msg_size = 0;
+                }
+
+                free(trig);
+        }
 }

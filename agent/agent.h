@@ -1,4 +1,4 @@
-/* Copyright (c) 2016 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,47 +13,52 @@
  * limitations under the License.
  */
 
-/* The agent header.
- *
- * The header contains the definition of an "agent" in the as logic organization
- * of different contexts that works together to accomplish their jobs.
- */
-
 #ifndef __EMAGE_AGENT_H
 #define __EMAGE_AGENT_H
 
-#include <stdint.h>
+#include <emage.h>
+#include <emage/emproto.h>
 
-#include "decor.h"
-#include "err.h"
 #include "emlist.h"
+#include "emtypes.h"
 #include "log.h"
 #include "net.h"
 #include "sched.h"
+#include "task.h"
 #include "triggers.h"
+#include "visibility.h"
 
-/* Agent operations are defined in emage.h, the public header */
+/* See emage.h public header for more info on this... */
 struct em_agent_ops;
 
-/* This is ultimately an agent. */
-struct agent {
-	/* Member of a list (there are more than one agent) */
-	struct list_head      next;
+/* Structure:
+ *      emage
+ *
+ * Abstract:
+ *      Provides the context of an agent. This structure organize the agent data
+ *      and state machines.
+ *
+ * Critical sections:
+ *      The insertion and removal of this structure is synchronized by core_lock
+ *      mutex. Every sybsystem has its own lock to grant a flexible and
+ *      independent usage of the resources.
+ */
+typedef struct __emage_agent {
+        /* Member of a list (there are more than one agent) */
+        struct list_head      next;
 
-	/* eNB ID  bound to this agent context */
-	uint64_t              enb_id;
-	/* If set informs that the agent subsystem are not ready yet */
-	int                   init;
+        /* eNB ID bound to this agent context */
+        enb_id_t              enb_id;
 
-	/* Operations related to the agent */
-	struct em_agent_ops * ops;
+        /* Operations related to the agent */
+        struct em_agent_ops * ops;
 
-	/* Context containing the active triggers of this agent */
-	struct tr_context     trig;
-	/* Context containing the network state machine */
-	struct net_context    net;
-	/* Context containing the state machine to run tasks in time */
-	struct sched_context  sched;
-};
+        /* Context containing the active triggers of this agent */
+        trctx                 trig;
+        /* Context containing the network state machine */
+        netctx                net;
+        /* Context containing the state machine to run tasks in time */
+        schctx                sched;
+} emage;
 
 #endif /* __EMAGE_AGENT_H */

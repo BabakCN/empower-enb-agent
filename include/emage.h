@@ -1,4 +1,4 @@
-/* Copyright (c) 2016 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,63 +33,63 @@ extern "C"
  * Layer 2 RAN sharing configuration 
  */
 typedef struct em_RAN_l2_configuration {
-	/* User scheduler requested */
-	int user_sched;
-	/* RBGs associated with the slice */
-	int rbg;
+        /* User scheduler requested */
+        int user_sched;
+        /* RBGs associated with the slice */
+        int rbg;
 } em_RAN_l2_conf;
 
 /*
  * RAN sharing configuration for a specific slice
  */
 typedef struct em_RAN_configuration {
-	int            nof_users;
-	/* Array of users of the slice */
-	uint16_t       users[EP_RAN_USERS_MAX];
-	/* Layer 2 configuration */
-	em_RAN_l2_conf l2;
+        int            nof_users;
+        /* Array of users of the slice */
+        uint16_t       users[EP_RAN_USERS_MAX];
+        /* Layer 2 configuration */
+        em_RAN_l2_conf l2;
 } em_RAN_conf;
 
 /*
  * Radio Access Network(RAN) sharing related procedures:
  */
 struct em_RAN_ops {
-	/* Informs the wrapper that the controller requested to report the 
-	 * status of the RAN mechanism.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* setup_request) (uint32_t mod);
+        /* Informs the wrapper that the controller requested to report the 
+         * status of the RAN mechanism.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* setup_request) (uint32_t mod);
 
-	/* Informs the wrapper that the controller requested to report the
-	 * current status of a specific slice.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* slice_request) (uint32_t mod, uint64_t slice);
+        /* Informs the wrapper that the controller requested to report the
+         * current status of a specific slice.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* slice_request) (uint32_t mod, uint64_t slice);
 
-	/* Informs the wrapper that the controller requested to add a new slice
-	 * within the RAN subsystem. During the association also the slice 
-	 * scheduler for its users is specified.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* slice_add) (
-		uint32_t mod, uint64_t slice, em_RAN_conf * det);
+        /* Informs the wrapper that the controller requested to add a new slice
+         * within the RAN subsystem. During the association also the slice 
+         * scheduler for its users is specified.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* slice_add) (
+                uint32_t mod, uint64_t slice, em_RAN_conf * det);
 
-	/* Informs the wrapper that the controller requested to remove an 
-	 * existing slice from RAN subsystem.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* slice_rem) (uint32_t mod, uint64_t slice);
+        /* Informs the wrapper that the controller requested to remove an 
+         * existing slice from RAN subsystem.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* slice_rem) (uint32_t mod, uint64_t slice);
 
-	/* Informs the wrapper that the controller requested to configure a 
-	 * slice in a specific way.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* slice_conf) (uint32_t mod, uint64_t slice, em_RAN_conf * conf);
+        /* Informs the wrapper that the controller requested to configure a 
+         * slice in a specific way.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* slice_conf) (uint32_t mod, uint64_t slice, em_RAN_conf * conf);
 };
 
 /* Defines the operations that can be customized depending on the technology
@@ -98,106 +98,106 @@ struct em_RAN_ops {
  * triggered by the local system.
  */
 struct em_agent_ops {
-	/* Perform custom initialization for the technology abstraction layer.
-	 *
-	 * Reporting an error during initialization stages cause the agent to
-	 * fail.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* init) (void);
+        /* Perform custom initialization for the technology abstraction layer.
+         *
+         * Reporting an error during initialization stages cause the agent to
+         * fail.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* init) (void);
 
-	/* Perform custom releasing for the technology abstraction layer.
-	 * Regardless of error returns codes, the agent will be stopped.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* release) (void);
+        /* Perform custom releasing for the technology abstraction layer.
+         * Regardless of error returns codes, the agent will be stopped.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* release) (void);
 
-	/* Signal the wrapper that the controller disconnected from the agent.
-	 *
-	 * You should take the necessary operation to ensure a coherent behavior
-	 * between the two instances.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* disconnected) (void);
+        /* Signal the wrapper that the controller disconnected from the agent.
+         *
+         * You should take the necessary operation to ensure a coherent behavior
+         * between the two instances.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* disconnected) (void);
 
-	/*
-	 * Setup messages:
-	 */
+        /*
+         * Setup messages:
+         */
 
-	/* The controller requested the current setup of a cell.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* cell_setup_request) (uint32_t mod, uint16_t cell_id);
+        /* The controller requested the current setup of a cell.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* cell_setup_request) (uint32_t mod, uint16_t cell_id);
 
-	/* The controller requested the current setup of the base station.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* enb_setup_request) (uint32_t mod);
+        /* The controller requested the current setup of the base station.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* enb_setup_request) (uint32_t mod);
 
-	/*
-	 * eNB Capabilities-related procedures:
-	 */
+        /*
+         * eNB Capabilities-related procedures:
+         */
 
-	/* Informs the stack that a log for UE activity has been required by the
-	 * controller. The wrapper shall perform operations to enable such
-	 * functionality into the base station.
-	 *
-	 * 'mod' represent the ctrl module which requested for such report.
-	 * Trigger id has to be used to check for its existence later.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* ue_report) (uint32_t mod, int trig_id);
+        /* Informs the stack that a log for UE activity has been required by the
+         * controller. The wrapper shall perform operations to enable such
+         * functionality into the base station.
+         *
+         * 'mod' represent the ctrl module which requested for such report.
+         * Trigger id has to be used to check for its existence later.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* ue_report) (uint32_t mod, int trig_id);
 
-	/* Informs the stack that a measurement request has been issued by the
-	 * controller for a certain device.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* ue_measure) (
-		uint32_t     mod,
-		int          trig_id,
-		uint8_t      measure_id,
-		uint16_t     rnti,
-		uint16_t     earfcn,
-		uint16_t     interval,
-		int16_t      max_cells,
-		int16_t      max_meas);
+        /* Informs the stack that a measurement request has been issued by the
+         * controller for a certain device.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* ue_measure) (
+                uint32_t     mod,
+                int          trig_id,
+                uint8_t      measure_id,
+                uint16_t     rnti,
+                uint16_t     earfcn,
+                uint16_t     interval,
+                int16_t      max_cells,
+                int16_t      max_meas);
 
-	/* Informs the stack that an Handover command has been requested by the
-	 * controller. The request is directed for this eNB to a target one,
-	 * with a defined transaction from a cell to another one.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* handover_UE) (
-		uint32_t mod,
-		uint16_t source_cell,
-		uint16_t rnti,
-		uint64_t target_enb,
-		uint16_t target_cell,
-		uint8_t  cause);
+        /* Informs the stack that an Handover command has been requested by the
+         * controller. The request is directed for this eNB to a target one,
+         * with a defined transaction from a cell to another one.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* handover_UE) (
+                uint32_t mod,
+                uint16_t source_cell,
+                uint16_t rnti,
+                uint64_t target_enb,
+                uint16_t target_cell,
+                uint8_t  cause);
 
-	/*
-	 * Cell-related capabilities procedures:
-	 */
+        /*
+         * Cell-related capabilities procedures:
+         */
 
-	/* Informs the wrapper that the controller required to report the status
-	 * of the MAC layer.
-	 *
-	 * Returns 0 on success, a negative error code otherwise.
-	 */
-	int (* mac_report) (uint32_t mod, int32_t interval, int trig_id);
+        /* Informs the wrapper that the controller required to report the status
+         * of the MAC layer.
+         *
+         * Returns 0 on success, a negative error code otherwise.
+         */
+        int (* mac_report) (uint32_t mod, int32_t interval, int trig_id);
 
-	/* Radio Access Network operations that allows to customize the slicing
-	 * within the wrapper logic.
-	 */
-	struct em_RAN_ops ran;
+        /* Radio Access Network operations that allows to customize the slicing
+         * within the wrapper logic.
+         */
+        struct em_RAN_ops ran;
 };
 
 /* Peek the triggers of the given agent and check if a trigger is enabled or
@@ -236,10 +236,10 @@ int em_send(uint64_t enb_id, char * msg, unsigned int size);
  * Returns 0 on success, or a negative error code on failure.
  */
 int em_start(
-	uint64_t              b_id,
-	struct em_agent_ops * ops,
-	char *                ctrl_addr,
-	unsigned short        ctrl_port);
+        uint64_t              b_id,
+        struct em_agent_ops * ops,
+        char *                ctrl_addr,
+        unsigned short        ctrl_port);
 
 /* Stop the Empower Agent logic. This will cause the agent to stop to all the
  * controller commands and local events.

@@ -1,8 +1,8 @@
 
-	EmPOWER Agent technology wrapping idea
-	
-	
-	
+        EmPOWER Agent technology wrapping idea
+        
+        
+        
 EMAge has been developed in such a way that allows external developer/companies
 to introduce their own free/propertary software inside the agent-controller 
 context. No modification can/must be done on the core itself, since it's logic 

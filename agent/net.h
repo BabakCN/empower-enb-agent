@@ -1,4 +1,4 @@
-/* Copyright (c) 2016 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,10 +13,6 @@
  * limitations under the License.
  */
 
-/*
- * Empower Agent internal network logic
- */
-
 #ifndef __EMAGE_NET_H
 #define __EMAGE_NET_H
 
@@ -25,60 +21,66 @@
 #include "visibility.h"
 
 /* Not connected to the controller */
-#define EM_STATUS_NOT_CONNECTED         0
-/* Connected to the controller. */
-#define EM_STATUS_CONNECTED             1
+#define NET_STATUS_NOT_CONNECTED        0
+/* Connected to the controller */
+#define NET_STATUS_CONNECTED            1
 
-/* Default buffer size. */
+/* Default buffer size */
 #define EM_BUF_SIZE                     4096
 
-/* Private context of a network listener */
-struct net_context {
-	/* Address to listen  */
-	char               addr[16];
-	/* Port to listen. */
-	unsigned short     port;
-	/* Socket fd used for communication */
-	int                sockfd;
-
-	/* A value different than 0 stop this listener.*/
-	int                stop;
-	/* Status of the listener */
-	int                status;
-	/* Sequence number; can potentially overflow */
-	unsigned int       seq;
-
-	/* Buffer where message received are dumped.
-	 * This is used to avoid using too much stack area.
-	 */
-	char               buf[EM_BUF_SIZE];
-
-	/* Thread in charge of this listening */
-	pthread_t          thread;
-	/* Lock for elements of this context */
-	pthread_spinlock_t lock;
-	/* Time to wait at the end of each loop, in ms */
-	unsigned int       interval;
-};
-
-/* Get the next valid sequence number to emit with this context. */
-INTERNAL unsigned int em_net_next_seq(struct net_context * net);
-
-/* Adjust the context due a network error. */
-INTERNAL int em_net_not_connected(struct net_context * net);
-
-/* Send a generic message using the network listener logic.
- */
-INTERNAL int em_net_send(
-	struct net_context * net, char * buf, unsigned int size);
-
-/* Start a new listener in a different threading context.
+/* Structure:
+ *      netctx
  *
- * Returns 0 on success, otherwise a negative error number.
+ * Abstract:
+ *      Provides a description of how the network state machine organize its 
+ *      data and variables.
+ *
+ * Critical sections:
+ *      The structure must be protected during initialization and release 
+ *      stages, and provides necessary synchronization primitives for network 
+ *      procedure to operate correctly.
  */
-INTERNAL int em_net_start(struct net_context * net);
+typedef struct __emage_netctx {
+        /* Address to listen */
+        char               addr[16];
+        /* Port to listen. */
+        unsigned short     port;
+        /* Socket fd used for communication */
+        int                sockfd;
 
-/* Order the network listener to stop it's operations. */
-INTERNAL int em_net_stop(struct net_context * net);
+        /* A value different than 0 stop this listener */
+        int                stop;
+        /* Status of the listener */
+        int                status;
+        /* Sequence number; can potentially overflow */
+        unsigned int       seq;
+
+        /* Buffer where message received are dumped.
+         * This is used to avoid using too much stack area.
+         */
+        char               buf[EM_BUF_SIZE];
+
+        /* Thread in charge of this listening */
+        pthread_t          thread;
+        /* Lock for elements of this context */
+        pthread_spinlock_t lock;
+        /* Time to wait at the end of each loop, in ms */
+        unsigned int       interval;
+} netctx;
+
+/* Get the next valid sequence number to emit with this context */
+INTERNAL seq_id_t net_next_seq(netctx * net);
+
+/* Adjust the context due a network error */
+INTERNAL int      net_not_connected(netctx * net);
+
+/* Send a generic message using the network listener logic */
+INTERNAL int      net_send(netctx * net, char * buf, unsigned int size);
+
+/* Start a new listener in a different threading context */
+INTERNAL int      net_start(netctx * net);
+
+/* Order the network listener to stop it's operations */
+INTERNAL int      net_stop(netctx * net);
 
 #endif /* __EMAGE_NET_H */

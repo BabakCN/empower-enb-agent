@@ -1,4 +1,4 @@
-# Copyright (c) 2016 Kewin Rausch <kewin.rausch@create-net.org>
+# Copyright (c) 2016-2018 Kewin Rausch
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +13,6 @@
 # limitations under the License.
 #
 
-#
-# Makefile to compile the EMAge agent as a library.
-#
-
 CC=gcc
 
 AGENTP=.
@@ -25,12 +21,7 @@ LIBS=-lpthread -lemproto
 INCLUDES=-I../include
 
 all:
-	$(CC) $(INCLUDES) -c -fpic -O2 -fvisibility=hidden       \
-		$(AGENTP)/log.c                                         \
-		$(AGENTP)/net.c                                         \
-		$(AGENTP)/sched.c                                       \
-		$(AGENTP)/triggers.c                                    \
-		$(AGENTP)/core.c
+	$(CC) $(INCLUDES) -c -fpic -O2 -fvisibility=hidden $(AGENTP)/*.c
 	$(CC) -shared -fpic -s -o libemagent.so *.o
 
 clean:
@@ -39,21 +30,14 @@ clean:
 	rm -f ./*.so
 
 debug:
-	$(CC) $(INCLUDES) -c -fpic -DEBUG -fvisibility=hidden    \
-		$(AGENTP)/log.c                                         \
-		$(AGENTP)/net.c                                         \
-		$(AGENTP)/sched.c                                       \
-		$(AGENTP)/triggers.c                                    \
-		$(AGENTP)/core.c
+	$(CC) $(INCLUDES) -c -fpic -DEBUG -fvisibility=hidden $(AGENTP)/*.c
 	$(CC) -shared -fpic -s -o libemagent.so *.o
 
 install:
 	cp ./libemagent.so $(INSTDIR)
 	mkdir -p $(INCLDIR)
 	cp -r ../include/emage.h $(INCLDIR)/
-#	cp -r ../include/emlog.h $(INCLDIR)/
 
 uninstall:
 	rm $(INSTDIR)/libemagent.so
 	rm -f $(INCLDIR)/emage.h
-#	rm -f $(INCLDIR)/emlog.h

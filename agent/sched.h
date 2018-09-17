@@ -1,4 +1,4 @@
-/* Copyright (c) 2016 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,93 +13,55 @@
  * limitations under the License.
  */
 
-/*
- * Empower Agent internal scheduler logic
- */
-
 #ifndef __EMAGE_SCHEDULER_H
 #define __EMAGE_SCHEDULER_H
 
-#include <time.h>
-#include <pthread.h>
+/* See task.h for more details */
+typedef struct __emage_task emtask;
 
-#include "emlist.h"
-#include "visibility.h"
+/* Structure:
+ *      schctx
+ *
+ * Abstract:
+ *      Provides an area of memory where scheduler context state machine is 
+ *      saved.
+ *
+ * Critical sections:
+ *      Initialization of this element should be performed under a critical area
+ *      to ensure proper initialization or release. Once started the structure 
+ *      provides the necessary element for the scheduling context to perform
+ *      in a save way its jobs.
+ */
+typedef struct __emage_scheduler_context {
+        /* A value different than 0 stop this context */
+        int                stop;
 
-/* Possible types of jobs to issue in the scheduler */
-enum JOB_TYPES {
-	JOB_TYPE_INVALID = 0,
-	JOB_TYPE_SEND,
-	JOB_TYPE_HELLO,
-	JOB_TYPE_ENB_SETUP,
-	JOB_TYPE_CELL_SETUP,
-	JOB_TYPE_UE_REPORT,
-	JOB_TYPE_UE_MEASURE,
-	JOB_TYPE_MAC_REPORT,
-	JOB_TYPE_HO,
-	JOB_TYPE_RAN_SETUP,
-	JOB_TYPE_RAN_SLICE,
-};
+        /* Tasks actually active in the scheduler */
+        struct list_head   jobs;
+        /* Tasks to do but not scheduled for this run */
+        struct list_head   todo;
 
-/* Job for agent scheduler */
-struct sched_job {
-	/* Member of a list */
-	struct list_head next;
-
-	/* Id of this job */
-	unsigned int id;
-	/* Type of job scheduled */
-	int type;
-
-	/* Data arguments for this job */
-	void * args;
-	/* Eventual size for the arguments */
-	unsigned int size;
-
-	/* This variable contains the number of time a message will be
-	 * rescheduled; -1 cause the job to be re-scheduled forever.
-	 */
-	int reschedule;
-
-	/* Time when the job has been enqueued */
-	struct timespec issued;
-	/* time in 'ms' after that the job will be run */
-	int elapse;
-};
-
-struct sched_context {
-	/* A value different than 0 stop this listener */
-	int stop;
-
-	/* Jobs actually active in the scheduler */
-	struct list_head jobs;
-	/* Jobs to do but not scheduled for this run */
-	struct list_head todo;
-
-	/* Thread in charge of this listening */
-	pthread_t thread;
-	/* Lock for elements of this context */
-	pthread_spinlock_t lock;
-	/* Time to wait at the end of each loop, in ms */
-	unsigned int interval;
-};
+        /* Thread in charge of this listening */
+        pthread_t          thread;
+        /* Lock for elements of this context */
+        pthread_spinlock_t lock;
+        /* Time to wait at the end of each loop, in ms */
+        unsigned int       interval;
+} schctx;
 
 /* Adds a job to a scheduler context */
-INTERNAL int em_sched_add_job(
-	struct sched_job * job, struct sched_context * sched);
+INTERNAL int      sched_add_task(schctx * ctx, emtask * task);
 
 /* Find and return the job instance with matching id and type */
-INTERNAL struct sched_job * em_sched_find_job(
-	struct sched_context * sched, unsigned int id, int type);
+//INTERNAL emtask * sched_find_job(schctx * ctx, task_id_t id, int type);
 
 /* Release a job which is currently scheduled by using the associated id */
-INTERNAL int em_sched_remove_job(
-	unsigned int id, int type, struct sched_context * sched);
+//INTERNAL int      sched_remove_job(schctx * ctx, task_id_t id, int type);
 
 /* Correctly start a new scheduler in it's own context */
-INTERNAL int em_sched_start(struct sched_context * sched);
+INTERNAL int      sched_start(schctx * ctx);
 
-/* Stop a scheduler */
-INTERNAL int em_sched_stop(struct sched_context * sched);
+/* Stop a scheduler and release all its resources */
+INTERNAL int      sched_stop(schctx * ctx);
 
 #endif /* __EMAGE_SCHEDULER_H */

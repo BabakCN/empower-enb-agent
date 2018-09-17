@@ -1,4 +1,4 @@
-/* Copyright (c) 2016 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,46 +13,38 @@
  * limitations under the License.
  */
 
-/*
- *  Empower Agent messages handling procedures.
- */
-
 #ifndef __EMAGE_LOG_H
 #define __EMAGE_LOG_H
 
 #include <stdio.h>
+
 #include "visibility.h"
 
-#define LOG_NAME_SPACE "16"
+typedef struct __emage_agent emage;
 
-/* Log routine for out-of-agent context case */
-#define EMCLOG(x, ...) \
-	em_log_message("CORE     > " x, ##__VA_ARGS__)
+/* Length dedicated for logging the procedure name */
+#define EMLOG_PROC_LEN "32"
 
 /* Log routine for every feedback */
-#define EMLOG(a, x, ...) \
-	em_log_message("AGENT[%d] > " x, a->enb_id, ##__VA_ARGS__)
+#define EMLOG(a, x, ...)   log_message(a, __func__, x, ##__VA_ARGS__)
 
 #ifdef EBUG
-
 /* Debugging routine; valid only when EBUG symbol is defined  */
-#define EMDBG(a, x, ...) \
-	em_log_message("AGENT[%d] > " x, a->enb_id, ##__VA_ARGS__)
-
+#define EMDBG(a, x, ...)   log_message(a, __func__, x, ##__VA_ARGS__)
 #else /* EBUG */
-#define EMDBG(id, x, ...)
+#define EMDBG(a, x, ...)   /* Into nothing */
 #endif /* EBUG */
 
-/* Prepare to use logging functionalities */
-INTERNAL int  em_log_init();
+/* Initialize the logging subsystem */
+INTERNAL int  log_init();
 
 /* Releases the logging subsystem and close any existing resource */
-INTERNAL void em_log_release();
+INTERNAL void log_release();
 
 /* Log a message with a printf-like style inside a previously initialized file
- * on he file-system. This procedure should be called after 'log_init', but
- * eventually fails without generating exceptions if called before.
+ * on the file-system. This procedure should be called after 'log_init', but 
+ * don't generate expection if invoked before.
  */
-INTERNAL void em_log_message(char * msg, ...);
+INTERNAL void log_message(emage * agent, const char * proc, char * msg, ...);
 
 #endif /* __EMAGE_LOG_H */

@@ -1,4 +1,4 @@
-/* Copyright (c) 2016 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,830 +13,1011 @@
  * limitations under the License.
  */
 
-/*
- * Empower Agent internal scheduler logic.
- */
-
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include <emage.h>
-#include <emage/emproto.h>
-
 #include "agent.h"
 
-/*
- * Some states when processing jobs
- */
-
-#define JOB_NET_ERROR                          -1
-#define JOB_CONSUMED                            0
-#define JOB_NOT_ELAPSED                         1
-#define JOB_RESCHEDULE                          2
+#define TASK_NET_ERROR   -1 /* Error at netwrok level during task processing */
+#define TASK_CONSUMED     0 /* Task consumed */
+#define TASK_NOT_ELAPSED  1 /* Too early for this task */
+#define TASK_RESCHEDULE   2 /* Task to be rescheduled */
 
 /* Dif "b-a" two timespec structs and return such value in ms*/
 #define ts_diff_to_ms(a, b)                     \
-	(((b->tv_sec - a->tv_sec) * 1000) +     \
-	 ((b->tv_nsec - a->tv_nsec) / 1000000))
+        (((b->tv_sec - a->tv_sec) * 1000) +     \
+        ((b->tv_nsec - a->tv_nsec) / 1000000))
 
 /******************************************************************************
  * Locking and atomic context                                                 *
  ******************************************************************************/
 
-/* Holds the lock to access critical part of a network context */
-#define sched_lock_ctx(s)       pthread_spin_lock(&s->lock)
+/* Procedure:
+ *      sched_lock_ctx
+ * 
+ * Abstract:
+ *      Lock a scheduling context
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx - The context to lock 
+ * 
+ * Returns:
+ *      ---
+ */
+#define sched_lock_ctx(ctx)       pthread_spin_lock(&ctx->lock)
 
-/* Relinquishes the lock to access critical part of a network context */
-#define sched_unlock_ctx(s)     pthread_spin_unlock(&s->lock)
+/* Procedure:
+ *      sched_unlock_ctx
+ * 
+ * Abstract:
+ *      Unlock a scheduling context
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx - The context to unlock 
+ * 
+ * Returns:
+ *      ---
+ */
+#define sched_unlock_ctx(ctx)     pthread_spin_unlock(&ctx->lock)
 
 /******************************************************************************
  * Utilities                                                                  *
  ******************************************************************************/
-#include <stdio.h>
-/* Fill RAN configuration structure with correct values arrived from the network
+
+/* Procedure:
+ *      sched_to_RANconf
+ * 
+ * Abstract:
+ *      Translates protocol information into RAN configuration one that will be
+ *       used to emit feedback through the callback system.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      det  - Details incoming from the protocol
+ *      conf - Configuration used with the callback system
+ * 
+ * Returns:
+ *      ---
  */
+
 INTERNAL
 void
-em_sched_to_RANconf(ep_ran_slice_det * det, em_RAN_conf * conf)
+sched_to_RANconf(ep_ran_slice_det * det, em_RAN_conf * conf)
 {
-	int i;
+        int i;
 
-	conf->l2.user_sched = det->l2.usched;
-	conf->l2.rbg        = det->l2.rbgs;
+        conf->l2.user_sched = det->l2.usched;
+        conf->l2.rbg        = det->l2.rbgs;
 
-	for(i = 0; i < det->nof_users && i < EP_RAN_USERS_MAX; i++) {
-		conf->users[i] = det->users[i];	
-	}
+        for(i = 0; i < det->nof_users && i < EP_RAN_USERS_MAX; i++) {
+                conf->users[i] = det->users[i];        
+        }
 
-	conf->nof_users = det->nof_users;
+        conf->nof_users = det->nof_users;
 }
 
-/* Fix the last details and send the message */
+/* Procedure:
+ *      sched_send_msg
+ * 
+ * Abstract:
+ *      Send a message to the controller connected with the given agent.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - Agent context to consider
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task
+ */
 INTERNAL
 int
-em_sched_send_msg(struct agent * a, char * msg, unsigned int size)
+sched_send_msg(emage * agent, char * msg, unsigned int size)
 {
-	if(size > EM_BUF_SIZE) {
-		EMLOG(a, "Message too long, msg=%lu, limit=%d!\n",
-			size + sizeof(uint32_t), EM_BUF_SIZE);
+        if(size > EM_BUF_SIZE) {
+                EMLOG(agent, "Message too long, msg=%lu, limit=%d!\n",
+                        size + sizeof(uint32_t), EM_BUF_SIZE);
 
-		return JOB_CONSUMED;
-	}
+                return TASK_CONSUMED;
+        }
 
-	/* Insert the correct sequence number before sending */
-	epf_seq(msg, size, em_net_next_seq(&a->net));
+        /* Insert the correct sequence number before sending */
+        epf_seq(msg, size, net_next_seq(&agent->net));
 
-	EMDBG(a, "Sending a message of %d bytes...\n", size);
+        EMDBG(agent, "Sending a message of %d bytes...\n", size);
 
-	if(em_net_send(&a->net, msg, size) < 0) {
-		return JOB_NET_ERROR; /* On error */
-	} else {
-		return JOB_CONSUMED;  /* On success */
-	}
+        if(net_send(&agent->net, msg, size) < 0) {
+                return TASK_NET_ERROR; /* On error */
+        } else {
+                return TASK_CONSUMED;  /* On success */
+        }
 }
 
 /******************************************************************************
- * Jobs                                                                       *
+ * Tasks                                                                      *
  ******************************************************************************/
 
-/* Execute a Send job */
-INTERNAL
-int
-em_sched_perform_send(struct agent * a, struct sched_job * job)
-{
-	return em_sched_send_msg(a, job->args, job->size);
-}
-
-/* Execute a Cell Capability job */
-INTERNAL
-int
-em_sched_perform_cell_setup(struct agent * a, struct sched_job * job)
-{
-	uint16_t pci = 0;
-	uint32_t mod = 0;
-
-	if(epp_head((char *)job->args, job->size, 0, 0, &pci, &mod, 0)) {
-		return JOB_CONSUMED;
-	}
-
-	EMDBG(a, "Performing a cell Capability job\n");
-
-	if(a->ops && a->ops->cell_setup_request) {
-		a->ops->cell_setup_request(mod, pci);
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Execute a eNB Capability job */
-INTERNAL
-int
-em_sched_perform_enb_setup(struct agent * a, struct sched_job * job)
-{
-	uint32_t mod = 0;
-
-	if(epp_head((char *)job->args, job->size, 0, 0, 0, &mod, 0)) {
-		return JOB_CONSUMED;
-	}
-
-	EMDBG(a, "Performing an eNB Capability job\n");
-
-	if(a->ops && a->ops->enb_setup_request) {
-		a->ops->enb_setup_request(mod);
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Execute an Handover job */
-INTERNAL
-int
-em_sched_perform_ho(struct agent * a, struct sched_job * job)
-{
-	uint32_t mod   = 0;
-	uint16_t scell = 0;
-	uint16_t rnti  = 0;
-	uint64_t tenb  = 0;
-	uint16_t tcell = 0;
-	uint8_t  cause = 0;
-
-	if(epp_head((char *)job->args, job->size, 0, 0, &scell, &mod, 0)) {
-		return JOB_CONSUMED;
-	}
-
-	if(epp_single_ho_req(
-		(char *)job->args, job->size, &rnti, &tenb, &tcell, &cause)) {
-		return JOB_CONSUMED;
-	}
-
-	EMDBG(a, "Performing a Handover job\n");
-
-	if(a->ops && a->ops->handover_UE) {
-		a->ops->handover_UE(mod, scell, rnti, tenb, tcell, cause);
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Execute an UE measurement job */
-INTERNAL
-int
-em_sched_perform_ue_measure(struct agent * a, struct sched_job * job)
-{
-	struct trigger * t     = (struct trigger *)job->args;
-
-	uint8_t          mid   = 0;
-	uint16_t         rnti  = 0;
-	uint16_t         freq  = 0;
-	uint16_t         intv  = 0;
-	uint16_t         max_c = 0;
-	uint16_t         max_m = 0;
-
-	EMDBG(a, "Performing an UE measurements job\n");
-
-	if(a->ops && a->ops->ue_measure) {
-		/* Find the real trigger; the given one just an empty copy... */
-		t = em_tr_find(&a->trig, t->id);
-
-		if(t) {
-			if(epp_trigger_uemeas_req(
-				t->req,
-				t->size,
-				&mid,
-				&rnti,
-				&freq,
-				&intv,
-				&max_c,
-				&max_m))
-			{
-				return JOB_CONSUMED;
-			}
-
-			a->ops->ue_measure(
-				t->mod,
-				t->id,
-				mid,
-				rnti,
-				freq,
-				intv,
-				max_c,
-				max_m);
-		}
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Execute a MAC report job */
-INTERNAL
-int
-em_sched_perform_mac_report(struct agent * a, struct sched_job * job)
-{
-	uint32_t         mod = 0;
-	int16_t          intv;
-	struct trigger * t   = (struct trigger *)job->args;
-
-	EMDBG(a, "Performing a MAC report job\n");
-
-	if(a->ops && a->ops->mac_report) {
-		t = em_tr_find(&a->trig, t->id);
-
-		if(t) {
-			if(epp_trigger_macrep_req(t->req, t->size, &intv)) {
-				return JOB_CONSUMED;
-			}
-
-			a->ops->mac_report(t->mod, intv, t->id);
-		}
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Execute an UE report job */
-INTERNAL
-int
-em_sched_perform_ue_report(struct agent * a, struct sched_job * job)
-{
-	uint32_t         mod = 0;
-	struct trigger * t   = (struct trigger *)job->args;
-
-	EMDBG(a, "Performing an UE report job\n");
-
-	if(a->ops && a->ops->ue_report) {
-		a->ops->ue_report(t->mod, t->id);
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Execute a Hello job */
-INTERNAL
-int
-em_sched_perform_hello(struct agent * a, struct sched_job * job)
-{
-	char buf[EM_BUF_SIZE];
-	int blen = 0;
-	int sent = 0;
-	int ret  = JOB_CONSUMED;
-
-	blen = epf_sched_hello_req(
-		buf, EM_BUF_SIZE, a->enb_id, 0, 0, job->elapse ,0);
-
-	EMDBG(a, "Performing an Hello job\n");
-
-	ret  = em_sched_send_msg(a, buf, blen);
-
-	return ret;
-}
-
-/* Execute a RAN Setup job */
-INTERNAL
-int
-em_sched_perform_ran_setup(struct agent * a, struct sched_job * job)
-{
-	uint32_t mod = 0;
-	
-	epp_head(job->args, job->size, 0, 0, 0, &mod, 0);
-
-	EMDBG(a, "Performing a RAN Setup job\n");
-
-	if (a->ops && a->ops->ran.setup_request) {
-		a->ops->ran.setup_request(mod);
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Execute a RAN slice job */
-INTERNAL
-int
-em_sched_perform_ran_slice(struct agent * a, struct sched_job * job)
-{
-	ep_msg_type       type = 0;
-	ep_act_type       act  = 0;
-	ep_op_type        op   = 0;
-	uint32_t          mod  = 0;
-
-	uint64_t         id    = 0;
-	ep_ran_slice_det sdet  = {0};
-	em_RAN_conf      conf  = {0};
-
-	/* If no operations are there, dont perform any other job. */
-	if (!a->ops) {
-		return JOB_CONSUMED;
-	}
-
-	epp_head(job->args, job->size, &type, 0, 0, &mod, 0);
-	act = epp_single_type(job->args, job->size);
-	op  = epp_single_op(job->args, job->size);
-
-	EMDBG(a, "Performing a RAN slice job\n");
-
-	/* Depending on the operation requested, call the correct callback */
-	switch (op) {
-		/* A request */
-	case EP_OPERATION_UNSPECIFIED:
-		if (a->ops->ran.slice_request) {
-			if(epp_single_ran_slice_req(job->args, job->size, &id)) 
-			{
-				break;
-			}
-
-			a->ops->ran.slice_request(mod, id);
-		}
-		break;
-	/* An addition */
-	case EP_OPERATION_ADD:
-		if (a->ops->ran.slice_add) {
-			if(epp_single_ran_slice_add(
-				job->args, 
-				job->size, 
-				&id,
-				&sdet))
-			{
-				break;
-			}
-				
-			em_sched_to_RANconf(&sdet, &conf);
-			a->ops->ran.slice_add(mod, id, &conf);
-		}
-		break;
-	/* A remove */
-	case EP_OPERATION_REM:
-		if (a->ops->ran.slice_rem) {
-			if(epp_single_ran_slice_rem(job->args, job->size, &id)) 
-			{
-				break;
-			}
-
-			a->ops->ran.slice_rem(mod, id);
-		}
-		break;
-	case EP_OPERATION_SET:
-		if (a->ops->ran.slice_conf) {
-			if(epp_single_ran_slice_set(
-				job->args, job->size, &id, &sdet)) 
-			{
-				break;
-			}
-
-			em_sched_to_RANconf(&sdet, &conf);		
-			a->ops->ran.slice_conf(mod, id, &conf);
-		}
-		break;
-	}
-
-	return JOB_CONSUMED;
-}
-
-/* Release a job which is no more useful.
- * This procedure assumes the job has already be removed from the tasks list.
+/* Procedure:
+ *      sched_perform_send
+ * 
+ * Abstract:
+ *      Perform a sending task, which will send a message to the controller.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
  */
 INTERNAL
 int
-em_sched_release_job(struct sched_job * job)
+sched_perform_send(emage * agent, emtask * task)
 {
-	/* If 'size' is set, 'args' contains a mallocated buffer that needs to
-	 * be released too.
-	 */
-	if(job->args && job->size > 0) {
-		free(job->args);
-		job->args = 0;
-	}
+        return sched_send_msg(agent, task->msg, task->msg_size);
+}
 
-	free(job);
-	return 0;
+/* Procedure:
+ *      sched_perform_cell_setup
+ * 
+ * Abstract:
+ *      Perform a Cell Setup task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_cell_setup(emage * agent, emtask * task)
+{
+        uint16_t pci = 0;
+        uint32_t mod = 0;
+
+        if(epp_head((char *)task->msg, task->msg_size, 0, 0, &pci, &mod, 0)) {
+                return TASK_CONSUMED;
+        }
+
+        EMDBG(agent, "Performing Cell Capability\n");
+
+        if(agent->ops && agent->ops->cell_setup_request) {
+                agent->ops->cell_setup_request(mod, pci);
+        }
+
+        return TASK_CONSUMED;
+}
+
+/* Procedure:
+ *      sched_perform_enb_setup
+ * 
+ * Abstract:
+ *      Perform an eNB Setup task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_enb_setup(emage * agent, emtask * task)
+{
+        uint32_t mod = 0;
+
+        if(epp_head(task->msg, task->msg_size, 0, 0, 0, &mod, 0)) {
+                return TASK_CONSUMED;
+        }
+
+        EMDBG(agent, "Performing eNB Capability\n");
+
+        if(agent->ops && agent->ops->enb_setup_request) {
+                agent->ops->enb_setup_request(mod);
+        }
+
+        return TASK_CONSUMED;
+}
+
+/* Procedure:
+ *      sched_perform_ho
+ * 
+ * Abstract:
+ *      Perform an Handover task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_ho(emage * agent, emtask * task)
+{
+        uint32_t mod   = 0;
+        uint16_t scell = 0;
+        uint16_t rnti  = 0;
+        uint64_t tenb  = 0;
+        uint16_t tcell = 0;
+        uint8_t  cause = 0;
+
+        EMDBG(agent, "Performing Handover\n");
+
+        if(epp_head(task->msg, task->msg_size, 0, 0, &scell, &mod, 0)) {
+                return TASK_CONSUMED;
+        }
+
+        if(epp_single_ho_req(
+                task->msg, 
+                task->msg_size, 
+                &rnti, 
+                &tenb, 
+                &tcell, 
+                &cause))
+        {
+                return TASK_CONSUMED;
+        }
+
+        if(agent->ops && agent->ops->handover_UE) {
+                agent->ops->handover_UE(mod, scell, rnti, tenb, tcell, cause);
+        }
+
+        return TASK_CONSUMED;
+}
+
+/* Procedure:
+ *      sched_perform_ue_measure
+ * 
+ * Abstract:
+ *      Perform an UE Measurement task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_ue_measure(emage * agent, emtask * task)
+{
+        emtri *  trig;
+
+        uint8_t  mid   = 0;
+        uint16_t rnti  = 0;
+        uint16_t freq  = 0;
+        uint16_t intv  = 0;
+        uint16_t max_c = 0;
+        uint16_t max_m = 0;
+
+        EMDBG(agent, "Performing UE measurements\n");
+
+        if(agent->ops && agent->ops->ue_measure) {
+                /* Find the real trigger; the given one just an empty copy... */
+                trig = trig_find_by_id(&agent->trig, task->trig);
+
+                if(!trig) {
+                        EMLOG(agent, "Trigger %d not found\n", task->trig);
+                        return TASK_CONSUMED;
+                }
+
+                if(epp_trigger_uemeas_req(
+                        trig->msg,
+                        trig->msg_size,
+                        &mid,
+                        &rnti,
+                        &freq,
+                        &intv,
+                        &max_c,
+                        &max_m))
+                {
+                        return TASK_CONSUMED;
+                }
+
+                agent->ops->ue_measure(
+                        trig->mod,
+                        trig->id,
+                        mid,
+                        rnti,
+                        freq,
+                        intv,
+                        max_c,
+                        max_m);
+        }
+
+        return TASK_CONSUMED;
+}
+
+/* Procedure:
+ *      sched_perform_mac_report
+ * 
+ * Abstract:
+ *      Perform a MAC report task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_mac_report(emage * agent, emtask * task)
+{
+        uint32_t mod = 0;
+        int16_t  intv;
+
+        emtri *  trig;
+
+        EMDBG(agent, "Performing a MAC report job\n");
+
+        if(agent->ops && agent->ops->mac_report) {
+                trig = trig_find_by_id(&agent->trig, task->trig);
+
+                if(trig) {
+                        if(epp_trigger_macrep_req(
+                                trig->msg, trig->msg_size, &intv))
+                        {
+                                return TASK_CONSUMED;
+                        }
+
+                        agent->ops->mac_report(trig->mod, intv, trig->id);
+                }
+        }
+
+        return TASK_CONSUMED;
+}
+
+/* Procedure:
+ *      sched_perform_ue_report
+ * 
+ * Abstract:
+ *      Perform an UE Report task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_ue_report(emage * agent, emtask * task)
+{
+        uint32_t mod = 0;
+
+        EMDBG(agent, "Performing UE Report\n");
+
+        if(agent->ops && agent->ops->ue_report) {
+                agent->ops->ue_report(task->mod, (int)task->trig);
+        }
+
+        return TASK_CONSUMED;
+}
+
+/* Procedure:
+ *      sched_perform_hello
+ * 
+ * Abstract:
+ *      Perform an Hello task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_hello(emage * agent, emtask * task)
+{
+        char buf[64] = {0};
+        int  blen = 0;
+        
+        EMDBG(agent, "Performing Hello\n");
+
+        blen = epf_sched_hello_req(
+                buf, 64, agent->enb_id, 0, 0, task->elapse, 0);
+
+        if(blen < 0) {
+                EMLOG(agent, "Cannot parse Hello, error %d", blen);
+                return TASK_CONSUMED;
+        }
+
+        return sched_send_msg(agent, buf, (unsigned int)blen);
+}
+
+/* Procedure:
+ *      sched_perform_ran_setup
+ * 
+ * Abstract:
+ *      Perform a RAN Setup task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_ran_setup(emage * agent, emtask * task)
+{
+        uint32_t mod = 0;
+        
+        EMDBG(agent, "Performing RAN Setup\n");
+
+        epp_head(task->msg, task->msg_size, 0, 0, 0, &mod, 0);
+
+        if (agent->ops && agent->ops->ran.setup_request) {
+                agent->ops->ran.setup_request(mod);
+        }
+
+        return TASK_CONSUMED;
+}
+
+/* Procedure:
+ *      sched_perform_ran_slice
+ * 
+ * Abstract:
+ *      Perform a RAN Slice task.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - The agent to operate on
+ *      task  - Task to consume
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_ran_slice(emage * agent, emtask * task)
+{
+        ep_msg_type       type = 0;
+        ep_act_type       act  = 0;
+        ep_op_type        op   = 0;
+        uint32_t          mod  = 0;
+
+        uint64_t         id    = 0;
+        ep_ran_slice_det sdet  = {0};
+        em_RAN_conf      conf  = {0};
+
+        /* If no operations are there, dont perform any other job. */
+        if (!agent->ops) {
+                return TASK_CONSUMED;
+        }
+
+        epp_head(task->msg, task->msg_size, &type, 0, 0, &mod, 0);
+        act = epp_single_type(task->msg, task->msg_size);
+        op  = epp_single_op(task->msg, task->msg_size);
+
+        /* Depending on the operation requested, call the correct callback */
+        switch (op) {
+        /* A request */
+        case EP_OPERATION_UNSPECIFIED:
+                EMDBG(agent, "Performing RAN Slice request\n");
+
+                if (agent->ops->ran.slice_request) {
+                        if(epp_single_ran_slice_req(
+                                task->msg, task->msg_size, &id)) 
+                        {
+                                break;
+                        }
+
+                        agent->ops->ran.slice_request(mod, id);
+                }
+                break;
+        /* An addition */
+        case EP_OPERATION_ADD:
+                EMDBG(agent, "Performing RAN Slice addition\n");
+
+                if (agent->ops->ran.slice_add) {
+                        if(epp_single_ran_slice_add(
+                                task->msg, 
+                                task->msg_size, 
+                                &id,
+                                &sdet))
+                        {
+                                break;
+                        }
+                                
+                        sched_to_RANconf(&sdet, &conf);
+                        agent->ops->ran.slice_add(mod, id, &conf);
+                }
+
+                break;
+        /* A remove */
+        case EP_OPERATION_REM:
+                EMDBG(agent, "Performing RAN Slice removal\n");
+
+                if (agent->ops->ran.slice_rem) {
+                        if(epp_single_ran_slice_rem(
+                                task->msg, task->msg_size, &id)) 
+                        {
+                                break;
+                        }
+
+                        agent->ops->ran.slice_rem(mod, id);
+                }
+
+                break;
+        /* Parameter settings */
+        case EP_OPERATION_SET:
+                EMDBG(agent, "Performing RAN Slice set\n");
+
+                if (agent->ops->ran.slice_conf) {
+                        if(epp_single_ran_slice_set(
+                                task->msg, task->msg_size, &id, &sdet)) 
+                        {
+                                break;
+                        }
+
+                        sched_to_RANconf(&sdet, &conf);                
+                        agent->ops->ran.slice_conf(mod, id, &conf);
+                }
+
+                break;
+        }
+
+        return TASK_CONSUMED;
 }
 
 /******************************************************************************
  * Generic procedures:                                                        *
  ******************************************************************************/
 
-/* Add a generic job into the scheduler 'todo' list */
-INTERNAL
-int
-em_sched_add_job(struct sched_job * job, struct sched_context * sched)
-{
-	int status = 0;
-#ifdef EBUG
-	struct agent * a = container_of(sched, struct agent, sched);
-#endif
-
-	clock_gettime(CLOCK_REALTIME, &job->issued);
-
-/****** Start of the critical section *****************************************/
-	sched_lock_ctx(sched);
-
-	/* Perform the job if the context is not stopped. */
-	if(!sched->stop) {
-		list_add(&job->next, &sched->jobs);
-	} else {
-		status = -1;
-	}
-
-	sched_unlock_ctx(sched);
-/****** End of the critical section *******************************************/
-
-	EMDBG(a, "Job %d added to scheduler\n", job->type);
-
-	return status;
-}
-
-/* Find a job from the scheduler 'todo' job list */
-INTERNAL
-struct sched_job *
-em_sched_find_job(
-	struct sched_context * sched, unsigned int id, int type)
-{
-	struct sched_job * job = 0;
-
-/****** Start of the critical section *****************************************/
-	sched_lock_ctx(sched);
-
-	list_for_each_entry(job, &sched->jobs, next) {
-		if(job->id == id && job->type == type) {
-			sched_unlock_ctx(sched);
-			return job;
-		}
-	}
-
-	sched_unlock_ctx(sched);
-/****** End of the critical section *******************************************/
-
-	return 0;
-}
-
-/* Performs a given job depending on how it is classified */
-INTERNAL
-int
-em_sched_perform_job(
-	struct agent * a, struct sched_job * job, struct timespec * now)
-{
-	int               s  = JOB_CONSUMED;
-	struct timespec * is = &job->issued;
-
-	/* Job not to be performed now. */
-	if(ts_diff_to_ms(is, now) < job->elapse) {
-		return JOB_NOT_ELAPSED;
-	}
-
-	EMDBG(a, "Selected job %d, type=%d\n", job->id, job->type);
-
-	switch(job->type) {
-	case JOB_TYPE_SEND:
-		s = em_sched_perform_send(a, job);
-		break;
-	case JOB_TYPE_HELLO:
-		s = em_sched_perform_hello(a, job);
-		break;
-	case JOB_TYPE_ENB_SETUP:
-		s = em_sched_perform_enb_setup(a, job);
-		break;
-	case JOB_TYPE_CELL_SETUP:
-		s = em_sched_perform_cell_setup(a, job);
-		break;
-	case JOB_TYPE_UE_REPORT:
-		s = em_sched_perform_ue_report(a, job);
-		break;
-	case JOB_TYPE_UE_MEASURE:
-		s = em_sched_perform_ue_measure(a, job);
-		break;
-	case JOB_TYPE_MAC_REPORT:
-		s = em_sched_perform_mac_report(a, job);
-		break;
-	case JOB_TYPE_HO:
-		s = em_sched_perform_ho(a, job);
-		break;
-	case JOB_TYPE_RAN_SETUP:
-		s = em_sched_perform_ran_setup(a, job);
-		break;
-	case JOB_TYPE_RAN_SLICE:
-		s = em_sched_perform_ran_slice(a, job);
-		break;
-	default:
-		EMDBG(a, "Unknown job cannot be performed, type=%d", job->type);
-	}
-
-	/* The job has to be rescheduled? */
-	if(s == 0 && job->reschedule != 0) {
-		EMDBG(a, "The job will be rescheduled!\n");
-		return JOB_RESCHEDULE;
-	}
-
-	return s;
-}
-
-/* Consumed all the jobs scheduled inside the context lists.
- *
- * This procedure is the one which signal eventual network errors to the network
- * context. Network context is a passive listener and can realize that the
- * connection is down with high latency.
+/* Procedure:
+ *      sched_add_task
+ * 
+ * Abstract:
+ *      Adds a task in a safe way to a context. The task will be granted to 
+ *      sleep at least for its specified interval before being executed. The
+ *      wait is not perfect since it follows scheduler clock quantums.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx  - Context to operate on
+ *      task - Task to add
+ * 
+ * Returns:
+ *      0 on success, otherwise a negative error code.
  */
 INTERNAL
 int
-em_sched_consume(struct sched_context * sched)
+sched_add_task(schctx * ctx, emtask * task)
 {
-	struct agent *       a   = container_of(sched, struct agent, sched);
-	struct net_context * net = &a->net;
-	struct sched_job *   job = 0;
-	struct sched_job *   tmp = 0;
-	struct timespec      now;
-	int                  op = 0;
-	int                  nj = 1;  /* New job to consume. */
-	int                  ne = 0;  /* Network error. */
-
-	while(nj) {
-/****** Start of the critical section *****************************************/
-		sched_lock_ctx(sched);
-
-		/* Nothing to to? Go to sleep. */
-		if(list_empty(&sched->jobs)) {
-			nj = 0;
-		}
-
-		if(nj) {
-			job = list_first_entry(
-				&sched->jobs,
-				struct sched_job,
-				next);
-
-			list_del(&job->next);
-		}
-
-		sched_unlock_ctx(sched);
-/****** End of the critical section *******************************************/
-
-		/* Nothing to do... out! */
-		if(!nj) {
-			break;
-		}
-
-		clock_gettime(CLOCK_REALTIME, &now);
-
-		op = em_sched_perform_job(a, job, &now);
-
-/****** Start of the critical section *****************************************/
-		sched_lock_ctx(sched);
-
-		/* Possible outcomes. */
-		switch(op) {
-		case JOB_NOT_ELAPSED:
-			list_add(&job->next, &sched->todo);
-			break;
-		case JOB_RESCHEDULE:
-			job->issued.tv_sec  = now.tv_sec;
-			job->issued.tv_nsec = now.tv_nsec;
-			list_add(&job->next, &sched->todo);
-
-			/* Consume one reschedule credit */
-			if(job->reschedule > 0) {
-				job->reschedule--;
-			}
-
-			break;
-		case JOB_CONSUMED:
-			em_sched_release_job(job);
-			break;
-		case JOB_NET_ERROR:
-			em_sched_release_job(job);
-			ne = 1;
-			break;
-		}
-
-		/* Network error happened? */
-		if(ne) {
-			/* Dump jobs to process at next run */
-			list_for_each_entry_safe(job, tmp, &sched->todo, next) {
-				list_del(&job->next);
-				em_sched_release_job(job);
-			}
-
-			/* Free ANY remaining job still to process */
-			list_for_each_entry_safe(job, tmp, &sched->jobs, next) {
-				list_del(&job->next);
-				em_sched_release_job(job);
-			}
-
-			sched_unlock_ctx(sched);
-
-			em_tr_flush(&a->trig);
-
-			/* Alert wrapper about controller disconnection */
-			if(a->ops->disconnected) {
-				a->ops->disconnected();
-			}
-
-			/* Signal the network that the connection is now down */
-			em_net_not_connected(net);
-
-			return 0;
-		}
-
-		sched_unlock_ctx(sched);
-/****** End of the critical section *******************************************/
-	}
-
-	/* All the jobs marked as to process again are moved to the official
-	 * job queue.
-	 */
-
-/****** Start of the critical section *****************************************/
-	sched_lock_ctx(sched);
-
-	list_for_each_entry_safe(job, tmp, &sched->todo, next) {
-		list_del(&job->next);
-		list_add(&job->next, &sched->jobs);
-	}
-
-	sched_unlock_ctx(sched);
-/****** End of the critical section *******************************************/
-
-	return 0;
-}
-
-/* Remove a well identified job from ANY queue of the scheduling context */
-INTERNAL
-int
-em_sched_remove_job(unsigned int id, int type, struct sched_context * sched)
-{
-	int                found = 0;
-	struct sched_job * job   = 0;
-	struct sched_job * tmp   = 0;
 #ifdef EBUG
-	struct agent *     a     = container_of(sched, struct agent, sched);
+        emage * a = container_of(ctx, emage, sched);
 #endif
 
-	/* Dump the job from wherever it could be listed. */
+        clock_gettime(CLOCK_REALTIME, &task->issued);
+
 /****** Start of the critical section *****************************************/
-	sched_lock_ctx(sched);
+        sched_lock_ctx(ctx);
 
-	list_for_each_entry_safe(job, tmp, &sched->jobs, next) {
-		if(job->id == id && job->type == type) {
-			EMDBG(a, "Removing job to process %u, type %d\n",
-				id, type);
+        /* Perform the job if the context is not stopped. */
+        if(!ctx->stop) {
+                list_add(&task->next, &ctx->jobs);
+        } else {
+                sched_unlock_ctx(ctx); /* Unlocking *************************/
+                return -1;
+        }
 
-			found = 1;
-			list_del(&job->next);
-
-			/* Free its resources */
-			em_sched_release_job(job);
-
-			/* There can be multiple jobs with the same id in case
-			 * of cancellation events, so remove everything.
-			 */
-		}
-	}
-
-	/* Where is it? Already performed? */
-	if(!found) {
-		list_for_each_entry_safe(job, tmp, &sched->todo, next) {
-			if(job->id == id && job->type == type) {
-				EMDBG(a, "Removing performed job %u, type %d\n",
-					id, type);
-
-				found = 1;
-				list_del(&job->next);
-
-				/* Free its resources */
-				em_sched_release_job(job);
-
-				/* There can be multiple jobs with the same id
-				 * in case of cancellation events, so remove
-				 * everything.
-				 */
-			}
-		}
-	}
-
-	sched_unlock_ctx(sched);
+        sched_unlock_ctx(ctx);
 /****** End of the critical section *******************************************/
 
-	if(!found) {
-		return -1;
-	}
+        EMDBG(a, "Task %d added to scheduler\n", task->type);
 
-	return 0;
+        return 0;
+}
+
+/* Procedure:
+ *      sched_perform_job
+ * 
+ * Abstract:
+ *      Perform a single task, processing the necessary operation to consume it.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      agent - Context to operate on
+ *      task  - Task to add
+ *      now   - Time at which the job is performed
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task.
+ */
+INTERNAL
+int
+sched_perform_job(emage * agent, emtask * task, struct timespec * now)
+{
+        int               s  = TASK_CONSUMED;
+        struct timespec * is = &task->issued;
+
+        /* Task not to be performed right now */
+        if(ts_diff_to_ms(is, now) < task->elapse) {
+                return TASK_NOT_ELAPSED;
+        }
+
+        switch(task->type) {
+        case TASK_TYPE_SEND:
+                s = sched_perform_send(agent, task);
+                break;
+        case TASK_TYPE_HELLO:
+                s = sched_perform_hello(agent, task);
+                break;
+        case TASK_TYPE_ENB_SETUP:
+                s = sched_perform_enb_setup(agent, task);
+                break;
+        case TASK_TYPE_CELL_SETUP:
+                s = sched_perform_cell_setup(agent, task);
+                break;
+        case TASK_TYPE_UE_REPORT:
+                s = sched_perform_ue_report(agent, task);
+                break;
+        case TASK_TYPE_UE_MEASURE:
+                s = sched_perform_ue_measure(agent, task);
+                break;
+        case TASK_TYPE_MAC_REPORT:
+                s = sched_perform_mac_report(agent, task);
+                break;
+        case TASK_TYPE_HO:
+                s = sched_perform_ho(agent, task);
+                break;
+        case TASK_TYPE_RAN_SETUP:
+                s = sched_perform_ran_setup(agent, task);
+                break;
+        case TASK_TYPE_RAN_SLICE:
+                s = sched_perform_ran_slice(agent, task);
+                break;
+        default:
+                EMDBG(agent, "Unknown task of type %d\n", task->type);
+        }
+
+        /* The job has to be rescheduled? */
+        if(s == TASK_CONSUMED && task->resch) {
+                EMDBG(agent, "The task will be rescheduled!\n");
+                return TASK_RESCHEDULE;
+        }
+
+        return s;
+}
+
+/* Procedure:
+ *      sched_consume
+ * 
+ * Abstract:
+ *      Tries to consume the tasks assigned for this quantum. The procedure will
+ *      discard consumed task and reschedule task which have not elapsed yet or
+ *      are requested to occurs again.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx - Context to operate on
+ * 
+ * Returns:
+ *      A TASK_* error code to identify what to do with the task
+ */
+INTERNAL
+int
+sched_consume(schctx * ctx)
+{
+        emage *         a   = container_of(ctx, emage, sched);
+        netctx *        net = &a->net;
+        emtask *        task= 0;
+        emtask *        tmp = 0;
+        struct timespec now;
+        int             op = 0;
+        int             nt = 1;  /* New task to consume. */
+        int             ne = 0;  /* Network error. */
+
+        while(nt) {
+/****** Start of the critical section *****************************************/
+                sched_lock_ctx(ctx);
+
+                /* Nothing to to? Go to sleep. */
+                if(list_empty(&ctx->jobs)) {
+                        nt = 0;
+                }
+
+                if(nt) {
+                        task = list_first_entry(&ctx->jobs, emtask, next);
+                        list_del(&task->next);
+                }
+
+                sched_unlock_ctx(ctx);
+/****** End of the critical section *******************************************/
+
+                /* Nothing to do... out! */
+                if(!nt) {
+                        break;
+                }
+
+                clock_gettime(CLOCK_REALTIME, &now);
+
+                op = sched_perform_job(a, task, &now);
+
+/****** Start of the critical section *****************************************/
+                sched_lock_ctx(ctx);
+
+                /* Possible outcomes. */
+                switch(op) {
+                case TASK_NOT_ELAPSED:
+                        list_add(&task->next, &ctx->todo);
+                        break;
+                case TASK_RESCHEDULE:
+                        task->issued.tv_sec  = now.tv_sec;
+                        task->issued.tv_nsec = now.tv_nsec;
+                        list_add(&task->next, &ctx->todo);
+
+                        /* Consume one reschedule credit */
+                        if(task->resch > 0) {
+                                task->resch--;
+                        }
+
+                        break;
+                case TASK_CONSUMED:
+                        task_free(task);
+                        break;
+                case TASK_NET_ERROR:
+                        task_free(task);
+                        ne = 1;
+                        break;
+                }
+
+                /* Network error happened? */
+                if(ne) {
+                        /* Dump jobs to process at next run */
+                        list_for_each_entry_safe(task, tmp, &ctx->todo, next) {
+                                list_del(&task->next);
+                                task_free(task);
+                        }
+
+                        /* Free ANY remaining job still to process */
+                        list_for_each_entry_safe(task, tmp, &ctx->jobs, next) {
+                                list_del(&task->next);
+                                task_free(task);
+                        }
+
+                        sched_unlock_ctx(ctx); /* Unlocking *******************/
+
+                        trig_flush(&a->trig);
+
+                        /* Alert wrapper about controller disconnection */
+                        if(a->ops->disconnected) {
+                                a->ops->disconnected();
+                        }
+
+                        /* Signal the network that the connection is now down */
+                        net_not_connected(net);
+
+                        return 0;
+                }
+
+                sched_unlock_ctx(ctx);
+/****** End of the critical section *******************************************/
+        }
+
+        /* All the tasks marked as to process again are moved to the official
+         * job queue.
+         */
+
+/****** Start of the critical section *****************************************/
+        sched_lock_ctx(ctx);
+
+        list_for_each_entry_safe(task, tmp, &ctx->todo, next) {
+                list_del(&task->next);
+                list_add(&task->next, &ctx->jobs);
+        }
+
+        sched_unlock_ctx(ctx);
+/****** End of the critical section *******************************************/
+
+        return 0;
 }
 
 /******************************************************************************
  * Scheduler procedures.                                                      *
  ******************************************************************************/
 
-/* Loop executed by the scheduling context thread */
+/* Procedure:
+ *      sched_loop
+ * 
+ * Abstract:
+ *      Loop through the scheduling context and consume/reschedule tasks.
+ *      All the task added to the scheduling context will be processed within 
+ *      this thread, so callback wrapper impementation will run at this level.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      args - Scheduling context to operate on
+ * 
+ * Returns:
+ *      ---
+ */
 INTERNAL
 void *
-em_sched_loop(void * args)
+sched_loop(void * args)
 {
-	struct sched_context * s   = (struct sched_context *)args;
+        schctx *        s   = (schctx *)args;
 #ifdef EBUG
-	struct agent *         a   = container_of(s, struct agent, sched);
+        emage *        a   = container_of(s, emage, sched);
 #endif
-	unsigned int           wi  = s->interval;
-	struct timespec        wt  = {0};
-	struct timespec        td  = {0};
-	struct sched_job *     job = 0;
-	struct sched_job *     tmp = 0;
+        unsigned int    wi  = s->interval;
+        struct timespec wt  = {0};
+        struct timespec td  = {0};
+        emtask *        task= 0;
+        emtask *        tmp = 0;
 
-	/* Convert the wait interval in a timespec struct. */
-	while(wi >= 1000) {
-		wi -= 1000;
-		wt.tv_sec += 1;
-	}
-	wt.tv_nsec = wi * 1000000;
+        /* Convert the wait interval in a timespec struct. */
+        while(wi >= 1000) {
+                wi -= 1000;
+                wt.tv_sec += 1;
+        }
+        wt.tv_nsec = wi * 1000000;
 
-	EMDBG(a, "Scheduling loop starting, interval=%d ms\n", s->interval);
+        EMDBG(a, "Scheduling loop starting, interval=%d ms\n", s->interval);
 
-	while(!s->stop) {
-		/* Job scheduling logic. */
-		em_sched_consume(s);
+        while(!s->stop) {
+                /* Job scheduling logic. */
+                sched_consume(s);
+                /* Relax the CPU. */
+                nanosleep(&wt, &td);
+        }
 
-		/* Relax the CPU. */
-		nanosleep(&wt, &td);
-	}
-
-	EMDBG(a, "Dumping remaining jobs due shutdown\n");
+        EMDBG(a, "Scheduling loop stopping\n");
 
 /****** Start of the critical section *****************************************/
-	sched_lock_ctx(s);
+        sched_lock_ctx(s);
 
-	/* Dump job to process again. */
-	list_for_each_entry_safe(job, tmp, &s->todo, next) {
-		EMDBG(a, "Removing processed job %u, type %d\n",
-			job->id, job->type);
+        /* Dump task to process again. */
+        list_for_each_entry_safe(task, tmp, &s->todo, next) {
+                list_del(&task->next);
+                task_free(task);
+        }
 
-		list_del(&job->next);
-		em_sched_release_job(job);
-	}
+        /* Free ANY remaining job still to process. */
+        list_for_each_entry_safe(task, tmp, &s->jobs, next) {
+                list_del(&task->next);
+                task_free(task);
+        }
 
-	/* Free ANY remaining job still to process. */
-	list_for_each_entry_safe(job, tmp, &s->jobs, next) {
-		EMDBG(a, "Removing job to process %u, type %d\n",
-			job->id, job->type);
-
-		list_del(&job->next);
-		em_sched_release_job(job);
-	}
-
-	sched_unlock_ctx(s);
+        sched_unlock_ctx(s);
 /****** End of the critical section *******************************************/
 
-	/*
-	 * If execution arrives here, then a stop has been issued.
-	 */
+        /*
+         * If execution arrives here, then a stop has been issued.
+         */
 
-out:
-	EMDBG(a, "Scheduling loop exiting...\n");
-
-	return 0;
+        return 0;
 }
 
-/* Start a scheduling context, initializing its variables and creating the
- * assigned thread.
+/* Procedure:
+ *      sched_start
+ * 
+ * Abstract:
+ *      Initializes and starts a scheduling context.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx - Scheduling context to operate on
+ * 
+ * Returns:
+ *      0 on success, otherwise a negative error code.
  */
 INTERNAL
 int
-em_sched_start(struct sched_context * sched)
+sched_start(schctx * ctx)
 {
-#ifdef EBUG
-	struct agent * a = container_of(sched, struct agent, sched);
-#endif
+        emage * a = container_of(ctx, emage, sched);
 
-	EMDBG(a, "Initializing scheduling context\n");
+        ctx->interval = 100;
 
-	sched->interval = 1000;
+        INIT_LIST_HEAD(&ctx->jobs);
+        INIT_LIST_HEAD(&ctx->todo);
 
-	INIT_LIST_HEAD(&sched->jobs);
-	INIT_LIST_HEAD(&sched->todo);
+        pthread_spin_init(&ctx->lock, 0);
 
-	pthread_spin_init(&sched->lock, 0);
+        /* Create the context where the agent scheduler will run on */
+        if(pthread_create(&ctx->thread, NULL, sched_loop, ctx)) {
+                EMLOG(a, "Cannot create scheduler thread\n");
+                return -1;
+        }
 
-	/* Create the context where the agent scheduler will run on */
-	if(pthread_create(&sched->thread, NULL, em_sched_loop, sched)) {
-		return -1;
-	}
-
-	return 0;
+        return 0;
 }
 
-/* Stops a scheduling context by issuing a signal to the relative thread */
+/* Procedure:
+ *      sched_stop
+ * 
+ * Abstract:
+ *      Stop a previously started thread. The call will wait for the thread to
+ *      finish its operations before returning to the caller.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx - Scheduling context to operate on
+ * 
+ * Returns:
+ *      0 on success, otherwise a negative error code.
+ */
 INTERNAL
 int
-em_sched_stop(struct sched_context * sched)
+sched_stop(schctx * ctx)
 {
 #ifdef EBUG
-	struct agent * a = container_of(sched, struct agent, sched);
+        emage * a = container_of(ctx, emage, sched);
 #endif
 
-	EMDBG(a, "Stopping scheduling context\n");
+        EMDBG(a, "Stopping scheduling context\n");
 
-	/* Stop and wait for it... */
-	sched->stop = 1;
+        /* Stop and wait for it... */
+        ctx->stop = 1;
 
-	pthread_join(sched->thread, 0);
-	pthread_spin_destroy(&sched->lock);
+        pthread_join(ctx->thread, 0);
+        pthread_spin_destroy(&ctx->lock);
 
-	return 0;
+        return 0;
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2018 Kewin Rausch
+/* Copyright (c) 2016-2018 Kewin Rausch
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,16 +13,30 @@
  * limitations under the License.
  */
 
-/* The 'decorators' header.
+#ifndef __EMAGE_TYPES_H
+#define __EMAGE_TYPES_H
+
+#include <stdint.h>
+
+/* This will include types from protocols, like eNB and module IDs */
+#include <emage/emproto.h>
+
+typedef uint32_t     seq_id_t;      /* Sequence ID type */
+
+/*
  *
- * Here are defined preprocessor definitions which does nothing and just help
- * the reader while understanding the code.
+ * Tasks:
+ * 
  */
 
-#ifndef __EMAGE_DECORATORS_H
-#define __EMAGE_DECORATORS_H
+typedef unsigned int task_id_t;     /* Task ID type */
 
-/* The procedure must be invoked within a critical section */
-#define __critical
+/*
+ *
+ * Triggers:
+ * 
+ */
 
-#endif /* __EMAGE_DECORATORS_H */
+typedef int          trig_id_t;     /* Trigger ID type */
+
+#endif /* __EMAGE_TYPES_H */

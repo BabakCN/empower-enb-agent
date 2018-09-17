@@ -13,19 +13,13 @@
  * limitations under the License.
  */
 
-/* The visibility header.
- *
- * Provides definition to identify if a symbol is internal to the library or if
- * it will be visible in the ELF symbol table.
- */
-
 #ifndef __EMAGE_VISIBILITY_H
 #define __EMAGE_VISIBILITY_H
 
-/* The symbol will be visible and usable by external module */
+/* The symbol will be visible and usable by external modules */
 #define EMAGE_API       __attribute__ ((visibility ("default")))
 
-/* The symbol will be used only within this library */
+/* The symbol will be used only within this library and will not be exported */
 #define INTERNAL        __attribute__ ((visibility ("hidden")))
 
 #endif /* __EMAGE_VISIBILITY_H */
