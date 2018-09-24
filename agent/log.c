@@ -61,7 +61,7 @@ log_init()
  *      log_release
  * 
  * Abstract:
- *      Releases the logging subsystem and free the associated resources,
+ *      Releases the logging subsystem and free the associated resources.
  * 
  * Assumptions:
  *      ---
