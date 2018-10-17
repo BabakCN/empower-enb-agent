@@ -85,10 +85,10 @@ int          trig_mem_OF = 0;
  * 
  * Arguments:
  *      mod      - Module which requested the trigger 
- *         type     - Type of trigger
- *         instance - Instance ID (several module can request multiple triggers)
- *         msg      - Original message
- *         size     - Original message size
+ *      type     - Type of trigger
+ *      instance - Instance ID (several module can request multiple triggers)
+ *      msg      - Original message
+ *      size     - Original message size
  * 
  * Returns:
  *      Valid pointer to a trigger, otherwise a null pointer on error.

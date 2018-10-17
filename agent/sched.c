@@ -172,42 +172,6 @@ sched_perform_send(emage * agent, emtask * task)
 }
 
 /* Procedure:
- *      sched_perform_cell_setup
- * 
- * Abstract:
- *      Perform a Cell Setup task.
- * 
- * Assumptions:
- *      ---
- * 
- * Arguments:
- *      agent - The agent to operate on
- *      task  - Task to consume
- * 
- * Returns:
- *      A TASK_* error code to identify what to do with the task.
- */
-INTERNAL
-int
-sched_perform_cell_setup(emage * agent, emtask * task)
-{
-        uint16_t pci = 0;
-        uint32_t mod = 0;
-
-        if(epp_head((char *)task->msg, task->msg_size, 0, 0, &pci, &mod, 0)) {
-                return TASK_CONSUMED;
-        }
-
-        EMDBG(agent, "Performing Cell Capability\n");
-
-        if(agent->ops && agent->ops->cell_setup_request) {
-                agent->ops->cell_setup_request(mod, pci);
-        }
-
-        return TASK_CONSUMED;
-}
-
-/* Procedure:
  *      sched_perform_enb_setup
  * 
  * Abstract:
@@ -702,9 +666,6 @@ sched_perform_job(emage * agent, emtask * task, struct timespec * now)
                 break;
         case TASK_TYPE_ENB_SETUP:
                 s = sched_perform_enb_setup(agent, task);
-                break;
-        case TASK_TYPE_CELL_SETUP:
-                s = sched_perform_cell_setup(agent, task);
                 break;
         case TASK_TYPE_UE_REPORT:
                 s = sched_perform_ue_report(agent, task);

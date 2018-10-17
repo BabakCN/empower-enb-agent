@@ -423,39 +423,6 @@ net_sc_hello(netctx * ctx, char * msg, int size)
 }
 
 /* Procedure:
- *      net_se_cell_setup
- * 
- * Abstract:
- *      Perform operations on receiving a Single Cell Setup request.
- * 
- * Assumptions:
- *      ---
- * 
- * Arguments:
- *      ctx  - The network context to operate on
- *      buf  - Buffer to send
- *      size - Size of the buffer to send 
- * 
- * Returns:
- *      0 on success, otherwise a negative error code.
- */
-INTERNAL
-int
-net_se_cell_setup(netctx * ctx, char * msg, int size)
-{
-        emage *  a = container_of(ctx, emage, net);
-        emtask * t = task_alloc(TASK_TYPE_CELL_SETUP, 1, 0, 0, msg, size);
-
-        if(!t) {
-                return -1;
-        }
-
-        EMDBG(a, "Processing Cell Capabilities\n");
-
-        return net_sched_task(a, t);
-}
-
-/* Procedure:
  *      net_se_enb_setup
  * 
  * Abstract:
@@ -861,11 +828,6 @@ net_process_single_event(netctx * ctx, char * msg, unsigned int size)
         case EP_ACT_ECAP:
                 if(epp_dir(msg, size) == EP_HDR_FLAG_DIR_REQ) {
                         return net_se_enb_setup(ctx, msg, size);
-                }
-                break;
-        case EP_ACT_CCAP:
-                if(epp_dir(msg, size) == EP_HDR_FLAG_DIR_REQ) {
-                        return net_se_cell_setup(ctx, msg, size);
                 }
                 break;
         case EP_ACT_HANDOVER:

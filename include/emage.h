@@ -127,12 +127,6 @@ struct em_agent_ops {
          * Setup messages:
          */
 
-        /* The controller requested the current setup of a cell.
-         *
-         * Returns 0 on success, a negative error code otherwise.
-         */
-        int (* cell_setup_request) (uint32_t mod, uint16_t cell_id);
-
         /* The controller requested the current setup of the base station.
          *
          * Returns 0 on success, a negative error code otherwise.
