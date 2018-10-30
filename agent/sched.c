@@ -277,19 +277,12 @@ INTERNAL
 int
 sched_perform_ue_measure(emage * agent, emtask * task)
 {
-        emtri *  trig;
-
-        uint8_t  mid   = 0;
-        uint16_t rnti  = 0;
-        uint16_t freq  = 0;
-        uint16_t intv  = 0;
-        uint16_t max_c = 0;
-        uint16_t max_m = 0;
+        emtri *    trig;
+        ep_ue_meas m;
 
         EMDBG(agent, "Performing UE measurements\n");
 
         if(agent->ops && agent->ops->ue_measure) {
-                /* Find the real trigger; the given one just an empty copy... */
                 trig = trig_find_by_id(&agent->trig, task->trig);
 
                 if(!trig) {
@@ -297,38 +290,32 @@ sched_perform_ue_measure(emage * agent, emtask * task)
                         return TASK_CONSUMED;
                 }
 
-                if(epp_trigger_uemeas_req(
-                        trig->msg,
-                        trig->msg_size,
-                        &mid,
-                        &rnti,
-                        &freq,
-                        &intv,
-                        &max_c,
-                        &max_m))
-                {
+                if(epp_trigger_uemeas_req(trig->msg, trig->msg_size, &m)) {
                         return TASK_CONSUMED;
                 }
 
-                agent->ops->ue_measure(
-                        trig->mod,
-                        trig->id,
-                        mid,
-                        rnti,
-                        freq,
-                        intv,
-                        max_c,
-                        max_m);
+                /* Do it for every measure received */
+                for(; m.nof_rrc > 0; m.nof_rrc--) {
+                        agent->ops->ue_measure(
+                                trig->mod,
+                                trig->id,
+                                m.rrc[m.nof_rrc - 1].meas_id,
+                                m.rrc[m.nof_rrc - 1].rnti,
+                                m.rrc[m.nof_rrc - 1].earfcn,
+                                m.rrc[m.nof_rrc - 1].interval,
+                                m.rrc[m.nof_rrc - 1].max_cells,
+                                m.rrc[m.nof_rrc - 1].max_meas);
+                }
         }
 
         return TASK_CONSUMED;
 }
 
 /* Procedure:
- *      sched_perform_mac_report
+ *      sched_perform_cell_meas
  * 
  * Abstract:
- *      Perform a MAC report task.
+ *      Perform a cell measurement task.
  * 
  * Assumptions:
  *      ---
@@ -342,27 +329,60 @@ sched_perform_ue_measure(emage * agent, emtask * task)
  */
 INTERNAL
 int
-sched_perform_mac_report(emage * agent, emtask * task)
+sched_perform_cell_meas(emage * agent, emtask * task)
 {
-        uint32_t mod = 0;
-        int16_t  intv;
+        uint32_t mod  = 0;
+        int32_t  intv;
+        uint16_t cell;
+        emtri *  trig = 0;
 
-        emtri *  trig;
+        EMDBG(agent, "Performing a cell measurement job\n");
 
-        EMDBG(agent, "Performing a MAC report job\n");
+        if(agent->ops && agent->ops->cell_measure) {
+                /* Trigger-type cell measurement */
+                if(task->trig > 0) {
+                        trig = trig_find_by_id(&agent->trig, task->trig);
 
-        if(agent->ops && agent->ops->mac_report) {
-                trig = trig_find_by_id(&agent->trig, task->trig);
+                        if(!trig) {
+                                return TASK_CONSUMED;   
+                        }
 
-                if(trig) {
-                        if(epp_trigger_macrep_req(
-                                trig->msg, trig->msg_size, &intv))
+                        cell = epp_head(
+                                trig->msg, 
+                                trig->msg_size,
+                                0,
+                                0,
+                                &cell,
+                                0,
+                                0);
+
+                        if(epp_trigger_cell_meas_req(
+                                trig->msg, trig->msg_size)) 
                         {
                                 return TASK_CONSUMED;
                         }
 
-                        agent->ops->mac_report(trig->mod, intv, trig->id);
-                }
+                        /* Trigger type does not report intervals */
+                        agent->ops->cell_measure(cell, trig->mod, 0, trig->id);
+                } else {
+                        cell = epp_head(
+                                task->msg, 
+                                task->msg_size,
+                                0,
+                                0,
+                                &cell,
+                                &mod,
+                                0);
+
+                        if(epp_sched_cell_meas_req(
+                                task->msg, task->msg_size, &intv)) 
+                        {
+                                return TASK_CONSUMED;
+                        }
+
+                        /* Trigger type does not report intervals */
+                        agent->ops->cell_measure(cell, mod, intv, -1);
+                }                
         }
 
         return TASK_CONSUMED;
@@ -673,8 +693,8 @@ sched_perform_job(emage * agent, emtask * task, struct timespec * now)
         case TASK_TYPE_UE_MEASURE:
                 s = sched_perform_ue_measure(agent, task);
                 break;
-        case TASK_TYPE_MAC_REPORT:
-                s = sched_perform_mac_report(agent, task);
+        case TASK_TYPE_CELL_MEASURE:
+                s = sched_perform_cell_meas(agent, task);
                 break;
         case TASK_TYPE_HO:
                 s = sched_perform_ho(agent, task);

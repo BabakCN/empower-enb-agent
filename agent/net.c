@@ -575,10 +575,10 @@ INTERNAL
 int
 net_te_ue_measure(netctx * ctx, char * msg, int size)
 {
-        mod_id_t mod;
-        seq_id_t seq;
-        uint32_t op;
-        uint8_t  m_id  = 0;
+        mod_id_t   mod;
+        seq_id_t   seq;
+        uint32_t   op;
+        ep_ue_meas m;
 
         emtask * task;
         emtri *  trig;
@@ -591,32 +591,49 @@ net_te_ue_measure(netctx * ctx, char * msg, int size)
         seq = epp_seq(msg, size);
         op  = epp_trigger_op(msg, size);
 
-        epp_trigger_uemeas_req(msg, size, &m_id, 0, 0, 0, 0, 0);
+        epp_trigger_uemeas_req(msg, size, &m);
 
-        if(op == EP_OPERATION_ADD) {
-                trig = trig_alloc(mod, TR_TYPE_UE_MEAS, (int)m_id, msg, size);
+        if(op != EP_OPERATION_ADD) {
+                for(; m.nof_rrc > 0; m.nof_rrc--) {
+                        trig_del_by_inst(
+                                &agent->trig,
+                                mod,
+                                TR_TYPE_UE_MEAS,
+                                (int)m.rrc[m.nof_rrc - 1].meas_id);
+                }
+                
+                return 0;
+        }
+
+        for(; m.nof_rrc > 0; m.nof_rrc--) {
+                trig = trig_alloc(
+                        mod,
+                        TR_TYPE_UE_MEAS,
+                        (int)m.rrc[m.nof_rrc - 1].meas_id,
+                        msg,
+                        (unsigned int)size);
 
                 if(!trig) {
-                        EMLOG(agent, "Not possible to create trigger!\n");
+                        EMLOG(agent, "Trigger creation failed!\n");
                         return 0;
                 }
 
                 trig_add(&agent->trig, trig);
-        } else {
-                return trig_del_by_inst(
-                        &agent->trig, mod, TR_TYPE_UE_MEAS, (int)m_id);
+
+                task = task_alloc(TASK_TYPE_UE_MEASURE, 1, 0, trig->id, 0, 0);
+
+                if(!task) {
+                        EMLOG(agent, "Cannot create task!\n");
+                
+                        trig_del_by_id(&agent->trig, trig->id);
+                        return 0;
+                }
+
+                /* Scheduler this task, look for the next one */
+                net_sched_task(agent, task); 
         }
 
-        task = task_alloc(TASK_TYPE_UE_MEASURE, 1, 0, trig->id, 0, 0);
-
-        if(!task) {
-                EMLOG(agent, "Cannot create task!\n");
-               
-                trig_del_by_id(&agent->trig, trig->id);
-                return 0;
-        }
-
-        return net_sched_task(agent, task);
+        return 0;
 }
 
 /* Procedure:
@@ -659,7 +676,7 @@ net_te_ue_report(netctx * ctx, char * msg, int size)
                 t = trig_alloc(mod, TR_TYPE_UE_REP, 0, msg, size);
 
                 if(!t) {
-                        EMLOG(a, "Not possible to create trigger!\n");
+                        EMLOG(a, "Trigger creation failed!\n");
                         return 0;
                 }
 
@@ -681,10 +698,10 @@ net_te_ue_report(netctx * ctx, char * msg, int size)
 }
 
 /* Procedure:
- *      net_te_mac_report
+ *      net_te_cell_meas_report
  * 
  * Abstract:
- *      Perform operations on receiving a Triggered MAC Report request.
+ *      Perform operations on receiving a Triggered Cell measurement request.
  * 
  * Assumptions:
  *      ---
@@ -699,7 +716,7 @@ net_te_ue_report(netctx * ctx, char * msg, int size)
  */
 INTERNAL
 int
-net_te_mac_report(netctx * ctx, char * msg, int size)
+net_te_cell_meas_report(netctx * ctx, char * msg, int size)
 {
         uint32_t mod;
         uint32_t seq;
@@ -717,10 +734,10 @@ net_te_mac_report(netctx * ctx, char * msg, int size)
         EMDBG(a, "Processing MAC Report\n");
 
         if(op == EP_OPERATION_ADD) {
-                t = trig_alloc(mod, TR_TYPE_MAC_REP, 0, msg, size);
+                t = trig_alloc(mod, TASK_TYPE_CELL_MEASURE, 0, msg, size);
 
                 if(!t) {
-                        EMLOG(a, "Not possible to create trigger!\n");
+                        EMLOG(a, "Trigger creation failed!\n");
                         return 0;
                 }
 
@@ -729,7 +746,7 @@ net_te_mac_report(netctx * ctx, char * msg, int size)
                 return trig_del_by_inst(&a->trig, mod, TR_TYPE_MAC_REP, 0);
         }
 
-        s = task_alloc(TASK_TYPE_MAC_REPORT, 1, 0, t->id, 0, 0);
+        s = task_alloc(TASK_TYPE_CELL_MEASURE, 1, 0, t->id, 0, 0);
 
         if(!s) {
                 EMLOG(a, "Cannot create task!\n");
@@ -739,6 +756,45 @@ net_te_mac_report(netctx * ctx, char * msg, int size)
         }
 
         return net_sched_task(a, s);
+}
+#include <stdio.h>
+/* Procedure:
+ *      net_sc_cell_meas_report
+ * 
+ * Abstract:
+ *      Perform operations on receiving a Scheduled Cell measurement request.
+ * 
+ * Assumptions:
+ *      ---
+ * 
+ * Arguments:
+ *      ctx  - The network context to operate on
+ *      buf  - Buffer to send
+ *      size - Size of the buffer to send 
+ * 
+ * Returns:
+ *      0 on success, otherwise a negative error code.
+ */
+INTERNAL
+int
+net_sc_cell_meas_report(netctx * ctx, char * msg, int size)
+{
+        emage *  a = container_of(ctx, emage, net);
+        emtask * t = task_alloc(
+                TASK_TYPE_CELL_MEASURE,
+                epp_sched_interval(msg, size),
+                -1, /* Continue to reschedule */
+                0,
+                msg,
+                size);
+
+        if(!t) {
+                return -1;
+        }
+
+        EMDBG(a, "Processing RAN Setup\n");
+
+        return net_sched_task(a, t);
 }
 
 /******************************************************************************
@@ -780,6 +836,11 @@ net_process_sched_event(netctx * ctx, char * msg, unsigned int size)
         case EP_ACT_HELLO:
                 if(epp_dir(msg, size) == EP_HDR_FLAG_DIR_REP) {
                         return net_sc_hello(ctx, msg, size);
+                }
+                break;
+        case EP_ACT_CELL_MEASURE:
+                if(epp_dir(msg, size) == EP_HDR_FLAG_DIR_REQ) {
+                        return net_sc_cell_meas_report(ctx, msg, size);
                 }
                 break;
         default:
@@ -889,8 +950,8 @@ net_process_trigger_event(netctx * ctx, char * msg, unsigned int size)
                 return net_te_ue_report(ctx, msg, size);
         case EP_ACT_UE_MEASURE:
                 return net_te_ue_measure(ctx, msg, size);
-        case EP_ACT_MAC_REPORT:
-                return net_te_mac_report(ctx, msg, size);
+        case EP_ACT_CELL_MEASURE:
+                return net_te_cell_meas_report(ctx, msg, size);
         default:
                 EMDBG(a, "Unknown trigger-event message, type=%d\n", t);
                 break;

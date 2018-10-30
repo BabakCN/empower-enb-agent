@@ -186,7 +186,11 @@ struct em_agent_ops {
          *
          * Returns 0 on success, a negative error code otherwise.
          */
-        int (* mac_report) (uint32_t mod, int32_t interval, int trig_id);
+        int (* cell_measure) (
+                uint16_t cell,
+                uint32_t mod,
+                int32_t  interval,
+                int      trig_id);
 
         /* Radio Access Network operations that allows to customize the slicing
          * within the wrapper logic.
