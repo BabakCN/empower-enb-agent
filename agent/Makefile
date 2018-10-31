@@ -22,7 +22,7 @@ INCLUDES=-I../include
 
 all:
 	$(CC) $(INCLUDES) -c -fpic -O2 -fvisibility=hidden $(AGENTP)/*.c
-	$(CC) -shared -fpic -s -o libemagent.so *.o
+	$(CC) -shared -fpic -s -o libemagent.so *.o $(LIBS)
 
 clean:
 	rm -f ./*.o
@@ -31,7 +31,7 @@ clean:
 
 debug:
 	$(CC) $(INCLUDES) -c -fpic -DEBUG -fvisibility=hidden $(AGENTP)/*.c
-	$(CC) -shared -fpic -s -o libemagent.so *.o
+	$(CC) -shared -fpic -s -o libemagent.so *.o $(LIBS)
 
 install:
 	cp ./libemagent.so $(INSTDIR)
