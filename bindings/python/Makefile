@@ -1,4 +1,4 @@
-# Copyright (c) 2016-2018 Kewin Rausch
+# Copyright (c) 2018 Kewin Rausch
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,23 +13,9 @@
 # limitations under the License.
 #
 
-export INSTDIR=/usr/lib
-export INCLDIR=/usr/include/emage
-
 all:
-	cd agent && make
+	python ./setup.py build
+	sudo python ./setup.py install --record ./install.log
 	
-clean:
-	cd agent && make clean
-
-debug:
-	cd agent && make debug
-
-install:
-	cd agent && make install
-
-uninstall:
-	cd agent && make uninstall
-
-python:
-	cd bindings/python && make
+remove:
+	sudo bash ./uninstall.sh

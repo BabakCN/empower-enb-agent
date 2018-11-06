@@ -57,5 +57,97 @@ In the case where EmPOWER Software is no more necessary for your Base station, y
 
 This will revert the changes done by the installation steps, removing the library and the headers previously installed in your system.
 
+## Agent bindings
+
+The library has been improved in order to include bindings of various programming languages. The bindings aim to provide an interface to the Agent library (written in C) to the environment provided by other languages.
+
+### Python
+
+Python bindings provides a single class named EmpowerAgent that is able to perform operations exported by the Agent library API.
+
+Python bindings can be installed in your system by invoking the `make python` command from the root directory. After the command is correctly executed, a file called install.log will be written in the `bindings\python` folder, tracing the modification in your system. The bindings can be removed by invoking the `make remove` command from the `bindings\python` folder of the bindings (the feature is *not accessible* from the root makefile).
+
+The class is organized as follows:
+
+```Python
+class EmpowerAgent
+        # Get/set the eNB Id
+        @property enb_id
+
+        # Get/set the controller address
+        @property ctrl_addr
+
+        # Get/set the controller port
+        @property ctrl_port
+
+        # Register to an event of the Agent
+        def register_to(self, event, *args)
+
+        # Check if a particular trigger exists 
+        def has_trigger(self, trig_id)
+        
+        # Delete a trigger by using its Id
+        def del_trigger(self, trig_id)
+
+        # Check if the Agent is connected to a controller
+        def is_connected(self)
+
+        # Start the Agent instance
+        def start(self)
+
+        # Stop the Agent instance
+        def terminate(self)
+```
+
+Starting the agent will inhibits the possibility to change its properties like Id, Controller address and port. These elements will be writable again once the agent is terminated. Terminating an agent wont invalidate the class instance, and you can start it again in a second time.
+
+The following script provides an example of how you can use the Python bindings:
+
+```Python
+#!/usr/bin/env python3
+#
+
+import time
+
+from emage import INIT
+from emage import DISCONNECTED
+from emage import ENB_SETUP_REQUEST
+
+from emage.empoweragent import EmpowerAgent
+
+def main():
+    enblist = []
+
+    enb = EmpowerAgent(id=1)
+    enblist.append(enb)
+
+    enb.register_to(INIT, testinit)
+    enb.register_to(RELEASE, testrelease)
+    enb.register_to(DISCONNECTED, testdisconnect)
+    enb.register_to(ENB_SETUP_REQUEST, testcap)
+    enb.start()
+
+    time.sleep(10)
+
+    enb.terminate()
+
+def testcap(mod):
+    print("eNB capabilities requested from module " + str(mod))
+
+def testinit():
+    print("Agent initialized")
+
+def testrelease():
+    print("Agent released")
+
+def testdisconnect():
+    print("Agent disconnected")
+
+if __name__ == "__main__":
+    main()
+```
+
+The script just allocates an Agent instance with Id 1 (unspecified controller address and port will fallback to default 127.0.0.1, port 2210). The script subscribe to some Agent events, then start it. After 10 seconds of wait time the Agent is terminated and the script ends.
+
 ### License
 The code is released under the Apache License, Version 2.0.
