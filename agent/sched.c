@@ -634,7 +634,7 @@ sched_add_task(schctx * ctx, emtask * task)
 
         /* Perform the job if the context is not stopped. */
         if(!ctx->stop) {
-                list_add(&task->next, &ctx->jobs);
+                list_add_tail(&task->next, &ctx->jobs);
         } else {
                 sched_unlock_ctx(ctx); /* Unlocking *************************/
                 return -1;
