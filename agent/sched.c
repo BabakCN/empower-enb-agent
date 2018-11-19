@@ -331,10 +331,10 @@ INTERNAL
 int
 sched_perform_cell_meas(emage * agent, emtask * task)
 {
-        uint32_t mod  = 0;
-        int32_t  intv;
-        uint16_t cell;
-        emtri *  trig = 0;
+        mod_id_t  mod  = 0;
+        int32_t   intv;
+        cell_id_t cell;
+        emtri *   trig = 0;
 
         EMDBG(agent, "Performing a cell measurement job\n");
 
@@ -347,14 +347,17 @@ sched_perform_cell_meas(emage * agent, emtask * task)
                                 return TASK_CONSUMED;   
                         }
 
-                        cell = epp_head(
+                        if(epp_head(
                                 trig->msg, 
                                 trig->msg_size,
                                 0,
                                 0,
                                 &cell,
                                 0,
-                                0);
+                                0))
+                        {
+                                return TASK_CONSUMED;
+                        }
 
                         if(epp_trigger_cell_meas_req(
                                 trig->msg, trig->msg_size)) 
@@ -365,14 +368,17 @@ sched_perform_cell_meas(emage * agent, emtask * task)
                         /* Trigger type does not report intervals */
                         agent->ops->cell_measure(cell, trig->mod, 0, trig->id);
                 } else {
-                        cell = epp_head(
+                        if(epp_head(
                                 task->msg, 
                                 task->msg_size,
                                 0,
                                 0,
                                 &cell,
                                 &mod,
-                                0);
+                                0))
+                        {
+                                return TASK_CONSUMED;       
+                        }
 
                         if(epp_sched_cell_meas_req(
                                 task->msg, task->msg_size, &intv)) 

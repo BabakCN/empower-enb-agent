@@ -757,7 +757,7 @@ net_te_cell_meas_report(netctx * ctx, char * msg, int size)
 
         return net_sched_task(a, s);
 }
-#include <stdio.h>
+
 /* Procedure:
  *      net_sc_cell_meas_report
  * 
