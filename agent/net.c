@@ -33,6 +33,7 @@
 
 #include "agent.h"
 
+
 #define NET_WAIT_TIME 100 /* In ms */
 
 /******************************************************************************
@@ -730,6 +731,53 @@ net_te_ue_report(netctx * ctx, char * msg, int size)
  * Returns:
  *      0 on success, otherwise a negative error code.
  */
+
+
+INTERNAL
+int
+net_te_phy_report(netctx * ctx, char * msg, int size)
+{
+        uint32_t mod;
+        uint32_t seq;
+        uint32_t op;
+
+        emtri *  t;
+        emtask*  s;
+        emage *  a = container_of(ctx, emage, net);
+
+        epp_head(msg, size, 0, 0, 0, &mod, 0);
+
+        seq = epp_seq(msg, size);
+        op  = epp_trigger_op(msg, size);
+
+        EMDBG(a, "Processing PHY Report\n");
+
+        if(op == EP_OPERATION_ADD) {
+                t = trig_alloc(mod, TR_TYPE_PHY_REP, 0, msg, size);
+
+                if(!t) {
+                        EMLOG(a, "Trigger creation failed!\n");
+                        return 0;
+                }
+
+                trig_add(&a->trig, t);
+        } else {
+                return trig_del_by_inst(&a->trig, mod, TR_TYPE_PHY_REP, 0);
+        }
+
+        s = task_alloc(TASK_TYPE_PHY_REPORT, 1, 0, t->id, 0, 0);
+
+        if(!s) {
+                EMLOG(a, "Cannot create task!\n");
+
+                trig_del_by_id(&a->trig, t->id);
+                return 0;
+        }
+
+        return net_sched_task(a, s);
+}
+
+
 INTERNAL
 int
 net_te_mac_report(netctx * ctx, char * msg, int size)
@@ -929,6 +977,8 @@ net_process_trigger_event(netctx * ctx, char * msg, unsigned int size)
                 return net_te_ue_measure(ctx, msg, size);
         case EP_ACT_MAC_REPORT:
                 return net_te_mac_report(ctx, msg, size);
+        case EP_ACT_PHY_MEASURE:
+                return net_te_phy_report(ctx, msg, size);
         default:
                 EMDBG(a, "Unknown trigger-event message, type=%d\n", t);
                 break;

@@ -25,7 +25,8 @@
 enum trigger_type {
         TR_TYPE_UE_REP,   /* UE report */
         TR_TYPE_UE_MEAS,  /* UE measurement */
-        TR_TYPE_MAC_REP   /* MAC reporting */
+        TR_TYPE_MAC_REP,   /* MAC reporting */
+		TR_TYPE_PHY_REP
 };
 
 /* Structure:

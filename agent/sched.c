@@ -435,6 +435,24 @@ sched_perform_ue_report(emage * agent, emtask * task)
         return TASK_CONSUMED;
 }
 
+
+INTERNAL
+int
+sched_perform_phy_report(emage * agent, emtask * task)
+{
+        uint32_t mod = 0;
+
+        EMDBG(agent, "Performing PHY Report\n");
+
+        if(agent->ops && agent->ops->phy_report) {
+                agent->ops->phy_report(task->mod, (int)task->trig);
+        }
+
+        return TASK_CONSUMED;
+}
+
+
+
 /* Procedure:
  *      sched_perform_hello
  * 
@@ -708,6 +726,9 @@ sched_perform_job(emage * agent, emtask * task, struct timespec * now)
                 break;
         case TASK_TYPE_UE_REPORT:
                 s = sched_perform_ue_report(agent, task);
+                break;
+        case TASK_TYPE_PHY_REPORT:
+                s = sched_perform_phy_report(agent, task);
                 break;
         case TASK_TYPE_UE_MEASURE:
                 s = sched_perform_ue_measure(agent, task);

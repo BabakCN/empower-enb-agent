@@ -159,6 +159,10 @@ struct em_agent_ops {
          *
          * Returns 0 on success, a negative error code otherwise.
          */
+
+        int (* phy_report) (uint32_t mod, int trig_id);
+
+
         int (* ue_measure) (
                 uint32_t     mod,
                 int          trig_id,
