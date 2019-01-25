@@ -440,12 +440,26 @@ INTERNAL
 int
 sched_perform_phy_report(emage * agent, emtask * task)
 {
-        uint32_t mod = 0;
+        uint32_t      mod = 0;
+        uint16_t      intv; /* Interval */
+        ep_phyrep_det det;
+
+        emtri *       trig = 0;
 
         EMDBG(agent, "Performing PHY Report\n");
 
-        if(agent->ops && agent->ops->phy_report) {
-                agent->ops->phy_report(task->mod, (int)task->trig);
+        trig = trig_find_by_id(&agent->trig, task->trig);
+
+        if(trig) {
+        	if(epp_trigger_phyrep_req(
+        			trig->msg, trig->msg_size, &intv, &det))
+        	{
+        		return TASK_CONSUMED;
+        	}
+
+        	if(agent->ops && agent->ops->phy_report) {
+					agent->ops->phy_report(task->mod, (int)task->trig, intv, det.tx_gain);
+			}
         }
 
         return TASK_CONSUMED;
